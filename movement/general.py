@@ -4,6 +4,8 @@ PiCar-X Movement Controller
 This module handles the basic movement operations for the PiCar-X Smart Service Dog project.
 """
 import time
+# Replace OpenCV with Vilib
+import vilib
 from picarx import Picarx
 import logging
 
@@ -22,6 +24,18 @@ class MovementController:
             self.last_error = 0
             self.straight_kp = 0.5  # Proportional gain
             self.straight_kd = 0.2  # Derivative gain
+            
+            # Initialize camera using Vilib
+            vilib.camera_start(vflip=False, hflip=False)  # Adjust flip parameters if needed
+            vilib.display(False)  # Don't display the camera stream by default
+            
+            # Set camera resolution
+            vilib.camera_config(width=320, height=240)
+            
+            # Initialize line detection
+            vilib.line_detect_switch(True)
+            vilib.line_detect_set_roi(0, 140, 320, 100)  # Set ROI: x, y, width, height
+            
             logger.info("PiCar-X movement controller initialized successfully")
         except Exception as e:
             logger.error(f"Failed to initialize PiCar-X: {e}")
@@ -61,24 +75,36 @@ class MovementController:
 
     def _apply_straight_line_correction(self, speed):
         """
-        Apply straight-line correction using gyroscope/sensor data.
+        Apply straight-line correction using camera input to detect and follow a path.
         
-        In a full implementation, this would use gyro data from an IMU or
-        analyze camera data for lane/path following.
+        Uses Vilib library to detect lines and calculates the error
+        from the center to adjust steering accordingly.
         """
         try:
-            # This is where you would get actual sensor readings
-            # For example: current_angle = self.px.get_imu_data()
-            # For now, we'll simulate with a placeholder
+            # Get line detection results from Vilib
+            line_status = vilib.line_detect_get_status()
             
-            # Placeholder - in a real implementation, get actual drift
-            # Example with ultrasonic or IR sensors on both sides
-            # left_distance = self.px.get_left_sensor()
-            # right_distance = self.px.get_right_sensor()
-            # current_error = left_distance - right_distance
-            
-            # Simulated error (you'll replace this with real sensor data)
-            current_error = 0  # Replace with actual sensor reading
+            if line_status:  # If a line is detected
+                line_info = vilib.line_detect_get_result()
+                
+                # Get the center of line
+                if 'center_x' in line_info:
+                    cx = line_info['center_x']
+                    frame_width = 320  # Using the width we configured for the camera
+                    
+                    # Calculate error (distance from center)
+                    current_error = cx - (frame_width / 2)
+                    
+                    # Scale the error to be more manageable
+                    # Higher values mean stronger steering corrections
+                    current_error = current_error / (frame_width / 2) * 20
+                else:
+                    current_error = 0
+                    logger.debug("Line detected but center_x not found")
+            else:
+                # No line detected
+                current_error = 0
+                logger.debug("No line detected in camera frame")
             
             # PD controller calculation
             correction = (self.straight_kp * current_error + 
@@ -88,7 +114,12 @@ class MovementController:
             self.drift_correction = correction
             
             # Apply the correction - adjust steering angle while maintaining forward motion
-            self.px.set_dir_servo_angle(self.drift_correction)
+            # Clamp the steering angle to avoid extreme corrections
+            max_angle = 40
+            steering_angle = max(min(self.drift_correction, max_angle), -max_angle)
+            
+            logger.debug(f"Line error: {current_error:.2f}, Steering angle: {steering_angle:.2f}")
+            self.px.set_dir_servo_angle(steering_angle)
             self.px.forward(speed)
             
         except Exception as e:
@@ -170,6 +201,8 @@ class MovementController:
         try:
             logger.info("Cleaning up resources")
             self.stop()
+            # Release Vilib camera resources
+            vilib.camera_close()
             # Add any additional cleanup here
         except Exception as e:
             logger.error(f"Error during cleanup: {e}")
