@@ -769,8 +769,16 @@ class VideoStreamClient:
         """
         bounding_boxes = []
         for box in smoothed_boxes:
+            # Get class name from the detection model
+            cls_id = box['cls']
+            try:
+                class_name = self.detection_model.names[cls_id]
+            except:
+                class_name = f"class_{cls_id}"  # Fallback if class name not found
+                
+            # Create the bounding box dictionary with proper label
             bounding_boxes.append({
-                'label': box['cls'],
+                'label': class_name,
                 'bbox': box['xyxy'],
                 'confidence': box['conf']
             })
@@ -780,7 +788,7 @@ class VideoStreamClient:
         
         # Return None if the navigation system isn't ready yet
         if action is None:
-            return None
+          return None
         
         # Otherwise, return the computed steering and speed
         return action['steering'], action['speed']

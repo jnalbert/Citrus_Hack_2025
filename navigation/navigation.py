@@ -7,6 +7,17 @@ from scipy.signal import convolve
 CAMERA_FOV_HORIZONTAL = 53.5  # Example: Adjust based on your camera module
 HISTOGRAM_ZONES = 30
 IMAGE_WIDTH = 640 # Example, use the width of your camera image
+IMAGE_HEIGHT = 480 # Typical height for 640x480 resolution
+
+# Classes to ignore - adjust based on your YOLO model's class list
+# Common floor/ground classes in COCO dataset
+IGNORE_CLASSES = [
+    'floor', 'ground', 'road', 'dirt', 'grass', 'pavement', 'asphalt',
+    'carpet', 'mat', 'rug', 'sand', 'snow', 'earth', 'field'
+]
+
+# Position-based filtering
+FLOOR_REGION_THRESHOLD = 0.35  # Bottom 65% of the frame might be floor
 
 class HistogramBuffer:
     def __init__(self, buffer_size=20, num_zones=HISTOGRAM_ZONES):
@@ -37,7 +48,39 @@ class HistogramBuffer:
         self.count = 0
 
 # Create a global histogram buffer
-histogram_buffer = HistogramBuffer(buffer_size=30)
+histogram_buffer = HistogramBuffer(buffer_size=45)
+
+def is_floor_detection(detection, image_height=IMAGE_HEIGHT):
+    """
+    Check if a detection is likely to be a floor or ground object.
+    
+    Args:
+        detection: Dictionary with detection info
+        image_height: Height of the frame
+    
+    Returns:
+        bool: True if detection is likely floor/ground
+    """
+    # Check if class is in the ignore list
+    if isinstance(detection.get('label'), str) and detection['label'].lower() in IGNORE_CLASSES:
+        return True
+        
+    # Check if the bounding box is mostly in the bottom portion of the frame
+    bbox = detection['bbox']
+    y_min, y_max = bbox[1], bbox[3]
+    
+    # Calculate the center of the bounding box
+    center_y = (y_min + y_max) / 2
+    
+    # Check if the center is in the bottom portion of the frame
+    if center_y / image_height > FLOOR_REGION_THRESHOLD:
+        # Additional check: is the box wider than tall? (floor objects typically are)
+        width = bbox[2] - bbox[0]
+        height = bbox[3] - bbox[1]
+        if width > height * 1.5:  # Box is significantly wider than tall
+            return True
+    
+    return False
 
 def create_histogram(detections, image_width, camera_fov_horizontal, num_zones):
     """Creates a histogram representing obstacle distribution based on YOLO detections.
@@ -58,6 +101,10 @@ def create_histogram(detections, image_width, camera_fov_horizontal, num_zones):
     fov_rad_per_pixel = np.radians(camera_fov_horizontal) / image_width
 
     for detection in detections:
+        # Skip floor/ground detections
+        if is_floor_detection(detection):
+            continue
+            
         bbox = detection['bbox']
         x_min_pixel = bbox[0]
         x_max_pixel = bbox[2]
@@ -133,7 +180,7 @@ def generate_action(clear_path, num_zones):
         normalized_deviation = deviation_from_center / (num_zones / 2)  # -1 to 1
 
         steering_angle = normalized_deviation * 20.0  # Adjust max steering angle.  Adjust this scaling factor!
-        speed = 0.003  # Base speed, adjust as needed
+        speed = 0.1  # Base speed, adjust as needed
         return {'steering': steering_angle, 'speed': speed}
     else:
         return {'steering': 0.0, 'speed': 0.0}  # Stop if no clear path
@@ -156,6 +203,7 @@ def generate_action_from_bounding_boxes(bounding_boxes):
     
     Now averages histograms over multiple frames for smoother control.
     Only returns an action after processing buffer_size (20) frames.
+    Also filters out floor/ground detections.
     
     Args:
         bounding_boxes: A list of bounding boxes
@@ -164,8 +212,16 @@ def generate_action_from_bounding_boxes(bounding_boxes):
     """
     global histogram_buffer
     
-    # Create the histogram for current frame
-    current_histogram = create_histogram(bounding_boxes, IMAGE_WIDTH, CAMERA_FOV_HORIZONTAL, HISTOGRAM_ZONES)
+    # Log number of total detections vs filtered detections
+    total_detections = len(bounding_boxes)
+    filtered_bboxes = [box for box in bounding_boxes if not is_floor_detection(box)]
+    filtered_count = total_detections - len(filtered_bboxes)
+    
+    if filtered_count > 0:
+        print(f"Filtered out {filtered_count} floor/ground detections out of {total_detections} total")
+    
+    # Create the histogram for current frame using filtered detections
+    current_histogram = create_histogram(filtered_bboxes, IMAGE_WIDTH, CAMERA_FOV_HORIZONTAL, HISTOGRAM_ZONES)
     
     # Add to buffer
     histogram_buffer.add_histogram(current_histogram)
@@ -176,7 +232,7 @@ def generate_action_from_bounding_boxes(bounding_boxes):
     
     # Get the averaged histogram
     averaged_histogram = histogram_buffer.get_average_histogram()
-    visualize_histogram(averaged_histogram)
+    # visualize_histogram(averaged_histogram)
     
     # Find a clear path using the averaged histogram
     min_safe_width = 5
