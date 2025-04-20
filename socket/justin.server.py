@@ -521,9 +521,9 @@ class ControlServer:
                 if steering_angle < 0.5 and steering_angle > -0.5:
                     self.car_controller.move_forward(motor_speed)
                 elif steering_angle < 0:
-                    self.car_controller.turn_left(steering_angle, motor_speed)
-                elif steering_angle > 0:
                     self.car_controller.turn_right(steering_angle, motor_speed)
+                elif steering_angle > 0:
+                    self.car_controller.turn_left(steering_angle, motor_speed)
                 else:
                     self.car_controller.move_forward(motor_speed)
         except Exception as e:
@@ -533,7 +533,7 @@ class ControlServer:
         """Clean up resources"""
         self.running = False
         
-        if self.is_pi:
+        if self.is_pi and self.car_controller is not None:
             self.car_controller.stop()
         
         # Close all client connections
