@@ -1,10 +1,20 @@
 import cv2
+import time
+import logging
 from ultralytics import YOLOE
 
-# Load the model
-yolo = YOLOE('yoloe-11s-seg-pf.pt')
+# ─── SETUP LOGGING & FPS COUNTERS ───────────────────────────────────────────
+logging.basicConfig(
+    level=logging.INFO,
+    format='[%(asctime)s] %(message)s',
+    datefmt='%H:%M:%S'
+)
+frame_count = 0
+start_time = time.time()
+prev_time = start_time
 
-# Load the video capture
+# ─── LOAD MODEL & CAMERA ─────────────────────────────────────────────────────
+yolo = YOLOE('yoloe-11s-seg-pf.pt')
 videoCap = cv2.VideoCapture(0)
 
 # Function to get class colors
@@ -12,65 +22,66 @@ def getColours(cls_num):
     base_colors = [(255, 0, 0), (0, 255, 0), (0, 0, 255)]
     color_index = cls_num % len(base_colors)
     increments = [(1, -2, 1), (-2, 1, -1), (1, -1, 2)]
-    color = [base_colors[color_index][i] + increments[color_index][i] * 
-    (cls_num // len(base_colors)) % 256 for i in range(3)]
+    color = [
+        (base_colors[color_index][i] + increments[color_index][i] * (cls_num // len(base_colors))) % 256
+        for i in range(3)
+    ]
     return tuple(color)
 
 # Default color for unknown objects
 unknown_color = (128, 128, 128)  # Grey color for unknown objects
 
+# ─── INFERENCE LOOP ──────────────────────────────────────────────────────────
 while True:
     ret, frame = videoCap.read()
     if not ret:
         continue
-    
-    # Set conf parameter to 0 to detect all objects regardless of confidence
+
+    # detect & track
     results = yolo.track(frame, stream=True, conf=0.2, persist=True)
 
+    # draw boxes
     for result in results:
-        # get the classes names
         classes_names = result.names
-
-        # iterate over each box
         for box in result.boxes:
-            # get coordinates
-            [x1, y1, x2, y2] = box.xyxy[0]
-            # convert to int
-            x1, y1, x2, y2 = int(x1), int(y1), int(x2), int(y2)
-
-            # get the class
-            cls = int(box.cls[0])
-            
-            # get the confidence
+            x1, y1, x2, y2 = box.xyxy[0].int().tolist()
+            cls  = int(box.cls[0])
             conf = float(box.conf[0])
 
-            # Determine if it's a known or unknown object based on confidence
             if conf < 0.4:
-                # This is an unknown object
                 class_name = "Unknown Object"
-                colour = unknown_color
+                colour     = unknown_color
             else:
-                # This is a classified object
                 class_name = classes_names[cls]
-                colour = getColours(cls)
+                colour     = getColours(cls)
 
-            # draw the rectangle
             cv2.rectangle(frame, (x1, y1), (x2, y2), colour, 2)
-
-            # put the class name and confidence on the image
             label = f'{class_name} {conf:.2f}'
-            cv2.putText(frame, label, (x1, y1), cv2.FONT_HERSHEY_SIMPLEX, 1, colour, 2)
-                
-    # show the image
-    cv2.imshow('frame', frame)
+            cv2.putText(frame, label, (x1, y1 - 10),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, colour, 2)
 
-    # break the loop if 'q' is pressed
+    # ── FPS CALC & OVERLAY ───────────────────────────────────────────────────
+    frame_count += 1
+    now = time.time()
+    fps = 1.0 / (now - prev_time)
+    prev_time = now
+
+    # overlay instantaneous FPS
+    cv2.putText(frame, f'FPS: {fps:.1f}', (10, 30),
+                cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+
+    # log average FPS every second
+    if now - start_time >= 1.0:
+        avg_fps = frame_count / (now - start_time)
+        logging.info(f'Avg FPS: {avg_fps:.1f} over {frame_count} frames')
+        start_time = now
+        frame_count = 0
+
+    # display
+    cv2.imshow('frame', frame)
     if cv2.waitKey(1) & 0xFF == ord('q'):
         break
 
-# release the video capture and destroy all windows
+# cleanup
 videoCap.release()
 cv2.destroyAllWindows()
-
-
-
