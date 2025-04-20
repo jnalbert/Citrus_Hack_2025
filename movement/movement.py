@@ -6,6 +6,8 @@ This module handles the basic movement operations for the PiCar-X Smart Service 
 import time
 from picarx import Picarx
 import logging
+import random
+
 
 # Set up logging
 logging.basicConfig(level=logging.INFO, 
@@ -19,9 +21,11 @@ class MovementController:
             self.px = Picarx()
             # Initialize straight-line correction parameters
             self.drift_correction = 0  # Default correction value
+            self.obstacle_threshold = 20  # Distance in cm to trigger obstacle avoidance
             self.last_error = 0
             self.straight_kp = 0.5  # Proportional gain
             self.straight_kd = 0.2  # Derivative gain
+            self.ultrasonic = self.px.ultrasonic
             logger.info("PiCar-X movement controller initialized successfully")
         except Exception as e:
             logger.error(f"Failed to initialize PiCar-X: {e}")
@@ -117,6 +121,55 @@ class MovementController:
             logger.error(f"Error moving in reverse: {e}")
             self.stop()
 
+    def reverse_left(self, angle=30, speed=40, duration=None):
+        """
+        Reverse the PiCar-X while steering left.
+        
+        Args:
+            angle (int): Steering angle, typically between 0-40.
+            speed (int): Reverse speed while turning.
+            duration (float, optional): Time in seconds to move. If None, moves indefinitely.
+        """
+        try:
+            logger.info(f"Reversing left with angle {angle} at speed {speed}")
+            # Ensure angle is positive for left turn (same direction as forward left turn)
+            angle = abs(angle)
+            self.px.set_dir_servo_angle(angle)
+            self.px.backward(speed)
+            
+            if duration is not None:
+                time.sleep(duration)
+                self.stop()
+                
+        except Exception as e:
+            logger.error(f"Error reversing left: {e}")
+            self.stop()
+            
+    def reverse_right(self, angle=30, speed=40, duration=None):
+        """
+        Reverse the PiCar-X while steering right.
+        
+        Args:
+            angle (int): Steering angle, typically between 0-40.
+            speed (int): Reverse speed while turning.
+            duration (float, optional): Time in seconds to move. If None, moves indefinitely.
+        """
+        try:
+            logger.info(f"Reversing right with angle {angle} at speed {speed}")
+            # Ensure angle is negative for right turn (same direction as forward right turn)
+            angle = -abs(angle)
+            self.px.set_dir_servo_angle(angle)
+            self.px.backward(speed)
+            
+            if duration is not None:
+                time.sleep(duration)
+                self.stop()
+                
+        except Exception as e:
+            logger.error(f"Error reversing right: {e}")
+            self.stop()
+
+
     def turn_left(self, angle=30, speed=40):
         """
         Turn the PiCar-X to the left.
@@ -178,27 +231,62 @@ class MovementController:
 # Example usage
 if __name__ == "__main__":
     controller = MovementController()
-    
     try:
-        # Test sequence
-        print("Moving forward with straight-line correction...")
-        controller.move_forward(speed=10, duration=3, maintain_straight=True)
-        
-        print("Turning left...")
-        controller.turn_left(angle=30, speed=10)
-        time.sleep(2)
-        
-        print("Turning right...")
-        controller.turn_right(angle=30, speed=10)
-        time.sleep(2)
-        
-        print("Moving in reverse...")
-        controller.reverse(speed=10, duration=2)
-        
-        print("Stopping...")
-        controller.stop()
-        
+        print("Starting autonomous navigation. Press Ctrl+C to exit.")
+        # --- parameters you can tweak ---
+        forward_speed   = 40    # speed when moving forward
+        reverse_speed   = 30    # speed when backing up
+        turn_angle      = 30    # steering angle for turns
+        step_duration   = 0.3   # seconds to move forward each cycle
+
+        while True:
+            # 1) Forward in short steps
+            controller.move_forward(
+                speed=forward_speed,
+                duration=step_duration,
+                maintain_straight=True
+            )
+
+            # 2) Read distance sensor
+            dist = controller.ultrasonic.read()
+            print(f"[Sensor] Distance = {dist:.1f} cm")
+
+            # 3) If too close, stop and evade
+            if 0 < dist < controller.obstacle_threshold:
+                print("[Alert] Obstacle detected—evading!")
+                controller.stop()
+
+                # 3a) Back up with a random steering bias
+                if random.random() < 0.5:
+                    controller.reverse_left(
+                        angle=turn_angle,
+                        speed=reverse_speed,
+                        duration=1.0
+                    )
+                else:
+                    controller.reverse_right(
+                        angle=turn_angle,
+                        speed=reverse_speed,
+                        duration=1.0
+                    )
+
+                # 3b) Pivot turn in place (forward) randomly
+                if random.random() < 0.5:
+                    controller.turn_left(
+                        angle=turn_angle,
+                        speed=forward_speed
+                    )
+                else:
+                    controller.turn_right(
+                        angle=turn_angle,
+                        speed=forward_speed
+                    )
+
+                # small pause before next cycle
+                time.sleep(0.5)
+
     except KeyboardInterrupt:
-        print("Program interrupted by user")
+        print("\nNavigation stopped by user")
     finally:
         controller.cleanup()
+        print("Clean exit")
