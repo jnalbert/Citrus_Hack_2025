@@ -533,6 +533,9 @@ class ControlServer:
         """Clean up resources"""
         self.running = False
         
+        if self.is_pi:
+            self.car_controller.stop()
+        
         # Close all client connections
         for client_socket, _ in self.client_connections:
             try:
