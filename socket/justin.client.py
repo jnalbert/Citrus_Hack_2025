@@ -29,7 +29,37 @@ class VideoStreamClient:
         self.current_sensor_data = {}
         self.detection_model = None
         self.detection_in_progress = False
-
+        self.current_processed_package = None
+        self.processed_frames_count = 0
+        self.processing_start_time = time.time()
+        self.processing_fps = 0
+        self.frame_buffer_with_ids = {}  # Store frames with unique IDs
+        self.processed_results = {}  # Store processed results by frame ID
+        self.next_frame_id = 0
+        
+        # Box tracking and stabilization
+        self.detection_history = {}  # Track objects by ID
+        self.history_length = 3      # Number of frames to keep in history
+        self.min_detection_frames = 2  # Minimum frames an object must be detected to display
+        self.process_every_n_frames = 1  # Only process every N frames
+        self.frame_counter = 0
+        
+        # Performance settings
+        self.resize_for_detection = True  # Resize frames before detection for better performance
+        self.detection_width = 320  # Smaller width for faster detection
+        self.original_size = None   # Store original frame size
+        
+        # Network optimization settings
+        self.recv_buffer_size = 131072  # 128KB buffer for socket operations (increased from 64KB)
+        self.reception_fps = 0         # Track reception frame rate
+        self.reception_frame_count = 0
+        self.reception_start_time = time.time()
+        self.current_jpeg_quality = 0  # Track quality reported by server
+        self.last_packet_size = 0      # Track last packet size
+        
+        # Thread synchronization
+        self.frame_ready_event = threading.Event()
+        
     def connect_to_server(self):
         try:
             self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
