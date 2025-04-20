@@ -1,12 +1,8 @@
 import socket
+import cv2
 import pickle
 import struct
 import sys
-import numpy as np
-import time
-
-# Use vilib instead of cv2
-import vilib
 
 class VideoStreamServer:
     def __init__(self, host='0.0.0.0', port=8080):
@@ -15,14 +11,14 @@ class VideoStreamServer:
         
         Args:
             host (str): Host IP to bind to. Default '0.0.0.0' (all interfaces)
-            port (int): Port to bind to. Default 8080
+            port (int): Port to bind to. Default 9999
         """
         self.host = host
         self.port = port
         self.server_socket = None
         self.client_socket = None
+        self.video_capture = None
         self.running = False
-        self.display_id = None
     
     def get_local_ip(self):
         """Get the local IP address that others can connect to."""
@@ -78,46 +74,24 @@ class VideoStreamServer:
                 self.client_socket, client_address = self.server_socket.accept()
                 print(f"Connected to client at {client_address}")
                 
-                # Initialize vilib for camera access
-                try:
-                    print("Initializing vilib camera...")
-                    vilib.init()
-                    
-                    # Start the camera with vilib
-                    # Parameters may need adjustment based on your Pi camera
-                    vilib.camera.start_camera(width=640, height=480, fps=30)
-                    
-                    # Initialize a display window if needed
-                    self.display_id = vilib.display.add_display(width=640, height=480)
-                    print("Camera initialized successfully")
-                    
-                    # Stream video to the client
-                    self.stream_to_client()
-                    
-                except Exception as e:
-                    print(f"Error initializing camera: {e}")
-                    if self.client_socket:
-                        self.client_socket.close()
+                # Initialize video capture
+                self.video_capture = cv2.VideoCapture(0)
+                if not self.video_capture.isOpened():
+                    print("Error: Could not open video source")
+                    self.client_socket.close()
                     continue
+                
+                # Stream video to the client
+                self.stream_to_client()
                 
                 # Clean up client resources
                 if self.client_socket:
                     self.client_socket.close()
                     self.client_socket = None
                 
-                # Stop the camera
-                try:
-                    vilib.camera.stop_camera()
-                except:
-                    pass
-                
-                # Remove the display
-                if self.display_id is not None:
-                    try:
-                        vilib.display.remove_display(self.display_id)
-                        self.display_id = None
-                    except:
-                        pass
+                if self.video_capture:
+                    self.video_capture.release()
+                    self.video_capture = None
         
         except KeyboardInterrupt:
             print("\nServer stopped by user")
@@ -129,37 +103,32 @@ class VideoStreamServer:
     def stream_to_client(self):
         """Stream video frames to the connected client"""
         try:
-            while self.running and self.client_socket:
-                # Get a frame from vilib camera
-                try:
-                    # Get the frame from vilib camera
-                    frame = vilib.camera.get_frame()
-                    
-                    if frame is None or frame.size == 0:
-                        print("Error: Failed to capture video frame")
-                        time.sleep(0.1)  # Small delay before retrying
-                        continue
-                    
-                    # Update the display if needed
-                    if self.display_id is not None:
-                        vilib.display.update_display(self.display_id, frame)
-                    
-                    # Serialize the frame using pickle
-                    serialized_frame = pickle.dumps(frame)
-                    
-                    # Create message with frame size and frame data
-                    message = struct.pack("L", len(serialized_frame)) + serialized_frame
-                    
-                    # Send the frame to the client
-                    self.client_socket.sendall(message)
-                    
-                    # Brief delay to control frame rate if needed
-                    # Adjust this value based on your requirements
-                    time.sleep(0.03)  # ~30 FPS
-                    
-                except Exception as e:
-                    print(f"Error capturing or sending frame: {e}")
-                    time.sleep(0.1)  # Small delay before retrying
+            while self.running and self.client_socket and self.video_capture.isOpened():
+                # Read a frame from the video source
+                ret, frame = self.video_capture.read()
+                if not ret:
+                    print("Error: Failed to capture video frame")
+                    break
+                
+                # Optional: Convert to grayscale if needed
+                # gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                
+                # Serialize the frame using pickle
+                serialized_frame = pickle.dumps(frame)
+                
+                # Create message with frame size and frame data
+                message = struct.pack("L", len(serialized_frame)) + serialized_frame
+                
+                # Send the frame to the client
+                self.client_socket.sendall(message)
+                
+                # Display the frame we're transmitting (optional)
+                cv2.imshow('Transmitting', frame)
+                
+                # Check for 'q' key press to quit
+                key = cv2.waitKey(1) & 0xFF
+                if key == ord("q"):
+                    break
                 
         except ConnectionResetError:
             print("Client disconnected")
@@ -186,14 +155,13 @@ class VideoStreamServer:
                 pass
             self.server_socket = None
         
-        # Clean up vilib resources
-        try:
-            if self.display_id is not None:
-                vilib.display.remove_display(self.display_id)
-            vilib.camera.stop_camera()
-            vilib.exit()
-        except Exception as e:
-            print(f"Error cleaning up vilib: {e}")
+        # Release the video capture
+        if self.video_capture:
+            self.video_capture.release()
+            self.video_capture = None
+        
+        # Close all OpenCV windows
+        cv2.destroyAllWindows()
         
         print("Server resources cleaned up")
 
