@@ -445,6 +445,14 @@ class VideoStreamClient:
         
         for result in results:
             boxes = result.boxes
+            if boxes is None:
+                detected_objects["nothing"] = {
+                            'xyxy': [0, 0, 0, 0],
+                            'conf': 100,
+                            'cls': 0,
+                            'time': time.time()
+                        }
+                continue
             for box in boxes:
                 try:
                     # Get box coordinates and tracking ID
@@ -503,7 +511,6 @@ class VideoStreamClient:
         
         for obj_id in ids_to_remove:
             del self.detection_history[obj_id]
-    
     def get_smoothed_boxes(self):
         """Get temporally smoothed bounding boxes for display"""
         smoothed_boxes = []
