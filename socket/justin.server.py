@@ -8,6 +8,8 @@ import time
 import json
 import numpy as np
 
+from movement.movement import MovementController
+
 # Determine if running on Raspberry Pi or regular computer
 IS_RASPBERRY_PI = True  # Default assumption
 try:
@@ -405,6 +407,7 @@ class ControlServer:
         self.client_connections = []
         self.is_pi = IS_RASPBERRY_PI if is_pi is None else is_pi
         self.picar = None
+        self.car_controller = None
         
     def start(self):
         """Start the control server"""
@@ -418,6 +421,9 @@ class ControlServer:
             self.server_socket.listen(5)
             
             print(f"Control server started on {self.host}:{self.port}")
+            
+            if self.is_pi:
+                self.car_controller = MovementController()
             
             # Start accepting connections
             while self.running:
@@ -506,19 +512,18 @@ class ControlServer:
             
         # Implementation for Raspberry Pi with actual hardware
         try:
-            if self.picar is not None:
-                # Map steering angle from [-1, 1] to your servo's range
-                # For example, if your servo range is -30 to 30 degrees:
-                angle = steering_angle * 30.0  # Convert to degrees
-                self.picar.set_dir_servo_angle(angle)
-                
-                # Map speed from [0, 1] to your motor speed range
-                # For example, if your motor range is 0 to 100:
+            if self.car_controller is not None:
                 motor_speed = abs(speed * 100.0)
-                if speed < 0:
-                    self.picar.backward(motor_speed)
+                
+                # Have a threshold of 0.5
+                if steering_angle < 0.5 and steering_angle > -0.5:
+                    self.car_controller.move_forward(motor_speed)
+                elif steering_angle < 0:
+                    self.car_controller.turn_left(steering_angle, motor_speed)
+                elif steering_angle > 0:
+                    self.car_controller.turn_right(steering_angle, motor_speed)
                 else:
-                    self.picar.forward(motor_speed)
+                    self.car_controller.move_forward(motor_speed)
         except Exception as e:
             print(f"Error applying control commands: {e}")
             
