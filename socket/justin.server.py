@@ -3,6 +3,8 @@ import cv2
 import pickle
 import struct
 import sys
+from picamera2 import Picamera2
+from picarx import Picarx
 
 class VideoStreamServer:
     def __init__(self, host='0.0.0.0', port=8080):
@@ -19,6 +21,7 @@ class VideoStreamServer:
         self.client_socket = None
         self.video_capture = None
         self.running = False
+        self.px = None
     
     def get_local_ip(self):
         """Get the local IP address that others can connect to."""
@@ -54,6 +57,7 @@ class VideoStreamServer:
             print(f"Clients should connect to this address")
             
             self.running = True
+            self.px = Picarx()
             return True
         
         except Exception as e:
@@ -74,12 +78,12 @@ class VideoStreamServer:
                 self.client_socket, client_address = self.server_socket.accept()
                 print(f"Connected to client at {client_address}")
                 
-                # Initialize video capture
-                self.video_capture = cv2.VideoCapture(0)
-                if not self.video_capture.isOpened():
-                    print("Error: Could not open video source")
-                    self.client_socket.close()
-                    continue
+                # Initialize Picamera2
+                self.video_capture = Picamera2()
+                self.video_capture.preview_configuration.main.size = (640, 480)
+                self.video_capture.preview_configuration.main.format = "RGB888"
+                self.video_capture.configure("preview")
+                self.video_capture.start()
                 
                 # Stream video to the client
                 self.stream_to_client()
@@ -90,7 +94,7 @@ class VideoStreamServer:
                     self.client_socket = None
                 
                 if self.video_capture:
-                    self.video_capture.release()
+                    self.video_capture.stop()
                     self.video_capture = None
         
         except KeyboardInterrupt:
@@ -103,32 +107,34 @@ class VideoStreamServer:
     def stream_to_client(self):
         """Stream video frames to the connected client"""
         try:
-            while self.running and self.client_socket and self.video_capture.isOpened():
-                # Read a frame from the video source
-                ret, frame = self.video_capture.read()
-                if not ret:
-                    print("Error: Failed to capture video frame")
-                    break
+            while self.running and self.client_socket:
+                # Read a frame from the Picamera2
+                frame = self.video_capture.capture_array()
                 
-                # Optional: Convert to grayscale if needed
-                # gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                # Get sensor data
+                ultrasonic_data = self.px.ultrasonic.read()
+                print(f"Ultrasonic data: {ultrasonic_data}")
                 
-                # Serialize the frame using pickle
-                serialized_frame = pickle.dumps(frame)
+                # Create a data package containing both frame and sensor data
+                data_package = {
+                    'frame': frame,
+                    'ultrasonic': ultrasonic_data,
+                    # Add other sensor data here as needed
+                    'timestamp': cv2.getTickCount() / cv2.getTickFrequency()
+                }
                 
-                # Create message with frame size and frame data
-                message = struct.pack("L", len(serialized_frame)) + serialized_frame
+                # Convert from BGR to RGB if needed (depends on camera output)
+                data_package['frame'] = cv2.cvtColor(data_package['frame'], cv2.COLOR_BGR2RGB)
                 
-                # Send the frame to the client
+                # Serialize the data package using pickle
+                serialized_data = pickle.dumps(data_package)
+                
+                # Create message with package size and package data
+                message = struct.pack("L", len(serialized_data)) + serialized_data
+                
+                # Send the data package to the client
                 self.client_socket.sendall(message)
-                
-                # Display the frame we're transmitting (optional)
-                cv2.imshow('Transmitting', frame)
-                
-                # Check for 'q' key press to quit
-                key = cv2.waitKey(1) & 0xFF
-                if key == ord("q"):
-                    break
+              
                 
         except ConnectionResetError:
             print("Client disconnected")
@@ -157,11 +163,9 @@ class VideoStreamServer:
         
         # Release the video capture
         if self.video_capture:
-            self.video_capture.release()
+            if hasattr(self.video_capture, 'stop'):
+                self.video_capture.stop()
             self.video_capture = None
-        
-        # Close all OpenCV windows
-        cv2.destroyAllWindows()
         
         print("Server resources cleaned up")
 

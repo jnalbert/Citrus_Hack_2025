@@ -23,6 +23,7 @@ class VideoStreamClient:
         self.running = False
         self.frame_buffer = queue.Queue(maxsize=buffer_size)
         self.current_frame = None
+        self.current_sensor_data = {}
         self.detection_model = None
         self.detection_in_progress = False
         
@@ -103,11 +104,20 @@ class VideoStreamClient:
                     data += self.client_socket.recv(4096)
                 
                 # Extract the frame
-                frame_data = data[:msg_size]
+                package_data = data[:msg_size]
                 data = data[msg_size:]
                 
-                # Deserialize the frame
-                frame = pickle.loads(frame_data)
+                # Deserialize the data package
+                data_package = pickle.loads(package_data)
+                
+                # Extract frame and sensor data
+                frame = data_package['frame']
+                
+                # Store the sensor data
+                self.current_sensor_data = {
+                    'ultrasonic': data_package['ultrasonic'],
+                    'timestamp': data_package['timestamp']
+                }
                 
                 # Update current frame (latest frame always available)
                 self.current_frame = frame.copy()
@@ -115,7 +125,11 @@ class VideoStreamClient:
                 # Add to buffer if space available (non-blocking)
                 try:
                     if not self.frame_buffer.full():
-                        self.frame_buffer.put_nowait(frame)
+                        # Store the frame with its sensor data
+                        self.frame_buffer.put_nowait({
+                            'frame': frame,
+                            'sensor_data': self.current_sensor_data
+                        })
                 except:
                     pass  # Skip frame if buffer is full
                 
@@ -132,17 +146,20 @@ class VideoStreamClient:
             if self.detection_model and not self.detection_in_progress:
                 try:
                     # Get a frame for processing
-                    frame = None
+                    frame_data = None
                     
                     # Prefer current_frame over buffered frames for most up-to-date processing
                     if self.current_frame is not None:
-                        frame = self.current_frame.copy()
+                        frame_data = {
+                            'frame': self.current_frame.copy(),
+                            'sensor_data': self.current_sensor_data
+                        }
                     elif not self.frame_buffer.empty():
-                        frame = self.frame_buffer.get()
+                        frame_data = self.frame_buffer.get()
                     
-                    if frame is not None:
+                    if frame_data is not None:
                         self.detection_in_progress = True
-                        self.process_frame_with_detection(frame)
+                        self.process_frame_with_detection(frame_data)
                         self.detection_in_progress = False
                 except Exception as e:
                     print(f"Error in frame processing: {e}")
@@ -151,10 +168,16 @@ class VideoStreamClient:
             # Sleep a bit to prevent CPU overuse
             time.sleep(0.01)
     
-    def process_frame_with_detection(self, frame):
+    def process_frame_with_detection(self, frame_data):
         """Apply object detection to a frame"""
         
-        print('Processing frame with detection')
+        frame = frame_data['frame']
+        sensor_data = frame_data['sensor_data']
+        
+        # Print ultrasonic data
+        if 'ultrasonic' in sensor_data:
+            print(f"Processing frame with ultrasonic distance: {sensor_data['ultrasonic']}")
+        
         return
         try:
             # Perform object detection
@@ -193,10 +216,28 @@ class VideoStreamClient:
     def display_frames(self):
         """Display received and processed frames"""
         try:
+            cv2.namedWindow('Stream', cv2.WINDOW_NORMAL)
+            
             while self.running:
                 if self.current_frame is not None:
-                    # Display the current frame (original or processed)
-                    cv2.imshow('Stream', self.current_frame)
+                    # Create a copy of the frame to annotate with sensor data
+                    display_frame = self.current_frame.copy()
+                    
+                    # Add sensor data to the frame
+                    if self.current_sensor_data:
+                        ultrasonic = self.current_sensor_data.get('ultrasonic')
+                        timestamp = self.current_sensor_data.get('timestamp')
+                        
+                        if ultrasonic is not None:
+                            cv2.putText(display_frame, f"Distance: {ultrasonic:.2f} cm", 
+                                       (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                        
+                        if timestamp is not None:
+                            cv2.putText(display_frame, f"Time: {timestamp:.2f}s", 
+                                       (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                    
+                    # Display the frame with sensor data
+                    cv2.imshow('Stream', display_frame)
                     
                     # Check for 'q' key press to quit
                     key = cv2.waitKey(1) & 0xFF
