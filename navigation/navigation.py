@@ -8,6 +8,37 @@ CAMERA_FOV_HORIZONTAL = 53.5  # Example: Adjust based on your camera module
 HISTOGRAM_ZONES = 30
 IMAGE_WIDTH = 640 # Example, use the width of your camera image
 
+class HistogramBuffer:
+    def __init__(self, buffer_size=20, num_zones=HISTOGRAM_ZONES):
+        self.buffer_size = buffer_size
+        self.histograms = []
+        self.num_zones = num_zones
+        self.count = 0
+    
+    def add_histogram(self, histogram):
+        """Add a new histogram to the buffer"""
+        if len(self.histograms) >= self.buffer_size:
+            self.histograms.pop(0)  # Remove oldest histogram
+        self.histograms.append(histogram)
+        self.count += 1
+    
+    def get_average_histogram(self):
+        """Get the average of all histograms in the buffer"""
+        if not self.histograms:
+            return np.zeros(self.num_zones)
+        return np.mean(self.histograms, axis=0)
+    
+    def is_ready(self):
+        """Check if we've collected enough histograms to make a decision"""
+        return self.count >= self.buffer_size
+    
+    def reset_count(self):
+        """Reset counter after sending action"""
+        self.count = 0
+
+# Create a global histogram buffer
+histogram_buffer = HistogramBuffer(buffer_size=30)
+
 def create_histogram(detections, image_width, camera_fov_horizontal, num_zones):
     """Creates a histogram representing obstacle distribution based on YOLO detections.
 
@@ -122,21 +153,39 @@ def visualize_histogram(histogram):
     
 def generate_action_from_bounding_boxes(bounding_boxes):
     """Generates steering and speed commands based on the bounding boxes.
-
+    
+    Now averages histograms over multiple frames for smoother control.
+    Only returns an action after processing buffer_size (20) frames.
+    
     Args:
         bounding_boxes: A list of bounding boxes
     Returns:
-        A dictionary containing 'steering' and 'speed'
+        A dictionary containing 'steering' and 'speed', or None if not enough frames processed
     """
-    # Create the histogram
-    histogram = create_histogram(bounding_boxes, IMAGE_WIDTH, CAMERA_FOV_HORIZONTAL, HISTOGRAM_ZONES)
-    # visualize_histogram(histogram)
-
-    # Find a clear path
+    global histogram_buffer
+    
+    # Create the histogram for current frame
+    current_histogram = create_histogram(bounding_boxes, IMAGE_WIDTH, CAMERA_FOV_HORIZONTAL, HISTOGRAM_ZONES)
+    
+    # Add to buffer
+    histogram_buffer.add_histogram(current_histogram)
+    
+    # Return None until we have enough data
+    if not histogram_buffer.is_ready():
+        return None
+    
+    # Get the averaged histogram
+    averaged_histogram = histogram_buffer.get_average_histogram()
+    visualize_histogram(averaged_histogram)
+    
+    # Find a clear path using the averaged histogram
     min_safe_width = 5
-    clear_path = find_clear_path(histogram, min_safe_width)
-    # print("Clear Path:", clear_path)
-
-    # Generate an action
+    clear_path = find_clear_path(averaged_histogram, min_safe_width)
+    
+    # Generate an action based on the averaged histogram
     action = generate_action(clear_path, HISTOGRAM_ZONES)
+    
+    # Reset counter to start fresh for next batch
+    histogram_buffer.reset_count()
+    
     return action

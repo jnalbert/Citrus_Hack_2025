@@ -404,7 +404,7 @@ class VideoStreamClient:
                     detection_frame = cv2.resize(detection_frame, (self.detection_width, new_h))
             
             # Get detection results (faster on smaller frame)
-            boxed_frame, results = get_bounding_boxes(detection_frame, self.detection_model, conf=0.8)
+            boxed_frame, results = get_bounding_boxes(detection_frame, self.detection_model, conf=0.6)
             
             # Update detection history and smooth bounding boxes
             self.update_detection_history(results, 
@@ -587,18 +587,14 @@ class VideoStreamClient:
                         current_time = time.time()
                         if current_time - last_result_sent_time > 0.1:  # Send at most 10 times per second
                             # Calculate steering angle and speed based on detections
-                            steering_angle, speed = self.calculate_control_commands(smoothed_boxes)
+                            control_result = self.calculate_control_commands(smoothed_boxes)
                             
-                            # Send control commands to the Raspberry Pi
-                            self.send_control_commands(steering_angle, speed)
-                            # if success:
-                            #     last_result_sent_time = current_time
-                            #     # Display what was sent in the frame for debugging
-                            #     cv2.putText(
-                            #         display_frame, 
-                            #         f"Sent: Steering={steering_angle:.2f}, Speed={speed:.2f}", 
-                            #         (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1
-                            #     )
+                            # Only send commands if we got a result (not None)
+                            if control_result is not None:
+                                steering_angle, speed = control_result
+                                
+
+                                self.send_control_commands(steering_angle, speed)
                     
                     # Draw boxes efficiently
                     self.draw_smoothed_boxes(display_frame, smoothed_boxes)
@@ -764,18 +760,13 @@ class VideoStreamClient:
     def calculate_control_commands(self, smoothed_boxes):
         """
         Calculate steering angle and speed based on detected objects
-        This is a placeholder for your actual implementation
         
         Args:
             smoothed_boxes: List of detected objects
         
         Returns:
-            Tuple of (steering_angle, speed)
+            Tuple of (steering_angle, speed) or None if not enough frames processed
         """
-        # PLACEHOLDER - Replace with your actual logic
-        steering_angle = 0.0  # Neutral steering
-        speed = 0.5  # Half speed
-        
         bounding_boxes = []
         for box in smoothed_boxes:
             bounding_boxes.append({
@@ -783,13 +774,16 @@ class VideoStreamClient:
                 'bbox': box['xyxy'],
                 'confidence': box['conf']
             })
+        
+        # This will return None if not enough histograms have been collected
         action = generate_action_from_bounding_boxes(bounding_boxes)
-        steering_angle = action['steering']
-        speed = action['speed']
         
-        # Example: if there are detections, adjust steering/speed based on object position
+        # Return None if the navigation system isn't ready yet
+        if action is None:
+            return None
         
-        return steering_angle, speed
+        # Otherwise, return the computed steering and speed
+        return action['steering'], action['speed']
 
 def main():
     # Create client
