@@ -11,7 +11,42 @@ logging.basicConfig(
 )
 
 # ─── 1) ONE‑TIME MODEL & CAMERA SETUP ────────────────────────────────────────
-yolo = YOLOE('yoloe-11s-seg-pf.pt').to('mps')  # or 'cpu'
+yolo = YOLOE('yoloe-11s-seg-pf.pt').to('cpu')  # or 'cpu'
+
+#function call
+def detect_objects(frame, model, conf=0.2, iou=0.45):
+    results = model.predict(
+        source=frame,
+        conf=conf,
+        iou=iou,
+        single_cls=True,
+        agnostic_nms=True,
+        max_det=50
+    )
+    res = results[0]
+
+    ih, iw = res.orig_shape
+    h_ratio = frame.shape[0] / ih
+    w_ratio = frame.shape[1] / iw
+
+    for box in res.boxes.xyxy.cpu().numpy():
+        x1, y1, x2, y2 = box
+        x1, y1 = int(x1 * w_ratio), int(y1 * h_ratio)
+        x2, y2 = int(x2 * w_ratio), int(y2 * h_ratio)
+        cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+
+    return frame
+
+
+image = cv2.imread('/Users/sarbesh/Desktop/Citrus_Hack_2025/object_detection/IMG_7190.png')
+
+# Run detection
+processed_image = detect_objects(image, yolo)
+
+# Show result
+cv2.imshow('Detection Result', processed_image)
+cv2.waitKey(0)
+cv2.destroyAllWindows()
 
 cap = cv2.VideoCapture(0)
 cap.set(cv2.CAP_PROP_FRAME_WIDTH,  640)
