@@ -235,6 +235,7 @@ class VideoStreamClient:
                 while len(data) < payload_size:
                     packet = self.client_socket.recv(self.recv_buffer_size)
                     if not packet:
+                        print("Server closed connection")
                         self.running = False
                         break
                     data += packet
@@ -329,8 +330,9 @@ class VideoStreamClient:
                             self.reception_frame_count = 0
                             self.reception_start_time = time.time()
                 
-        except ConnectionResetError:
-            print("Server disconnected")
+        except socket.error as e:
+            print(f"Socket error: {e}")
+            self.running = False
         except Exception as e:
             print(f"Error receiving frames: {e}")
         finally:
@@ -581,15 +583,15 @@ class VideoStreamClient:
                             steering_angle, speed = self.calculate_control_commands(smoothed_boxes)
                             
                             # Send control commands to the Raspberry Pi
-                            success = self.send_control_commands(steering_angle, speed)
-                            if success:
-                                last_result_sent_time = current_time
-                                # Display what was sent in the frame for debugging
-                                cv2.putText(
-                                    display_frame, 
-                                    f"Sent: Steering={steering_angle:.2f}, Speed={speed:.2f}", 
-                                    (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1
-                                )
+                            self.send_control_commands(steering_angle, speed)
+                            # if success:
+                            #     last_result_sent_time = current_time
+                            #     # Display what was sent in the frame for debugging
+                            #     cv2.putText(
+                            #         display_frame, 
+                            #         f"Sent: Steering={steering_angle:.2f}, Speed={speed:.2f}", 
+                            #         (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1
+                            #     )
                     
                     # Draw boxes efficiently
                     self.draw_smoothed_boxes(display_frame, smoothed_boxes)
@@ -774,9 +776,9 @@ class VideoStreamClient:
                 'bbox': box['xyxy'],
                 'confidence': box['conf']
             })
-        action = generate_action_from_bounding_boxes(bounding_boxes)
-        steering_angle = action['steering']
-        speed = action['speed']
+        # action = generate_action_from_bounding_boxes(bounding_boxes)
+        # steering_angle = action['steering']
+        # speed = action['speed']
         
         # Example: if there are detections, adjust steering/speed based on object position
         

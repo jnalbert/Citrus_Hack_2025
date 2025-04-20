@@ -130,13 +130,12 @@ def generate_action_from_bounding_boxes(bounding_boxes):
     """
     # Create the histogram
     histogram = create_histogram(bounding_boxes, IMAGE_WIDTH, CAMERA_FOV_HORIZONTAL, HISTOGRAM_ZONES)
-    print("Histogram:", histogram)
-    visualize_histogram(histogram)
+    # visualize_histogram(histogram)
 
     # Find a clear path
     min_safe_width = 5
     clear_path = find_clear_path(histogram, min_safe_width)
-    print("Clear Path:", clear_path)
+    # print("Clear Path:", clear_path)
 
     # Generate an action
     action = generate_action(clear_path, HISTOGRAM_ZONES)
