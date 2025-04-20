@@ -4,9 +4,12 @@ import cv2
 import pickle
 import struct
 import sys
+import os
 import time
 import json
 import numpy as np
+
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from movement.movement import MovementController
 
@@ -103,7 +106,6 @@ class VideoStreamServer:
             # Initialize PiCar if on Raspberry Pi
             if self.is_pi:
                 try:
-                    self.px = Picarx()
                     print("PiCar-X initialized")
                 except Exception as e:
                     print(f"Error initializing PiCar: {e}")
@@ -423,7 +425,7 @@ class ControlServer:
             print(f"Control server started on {self.host}:{self.port}")
             
             if self.is_pi:
-                self.car_controller = MovementController()
+                self.car_controller = MovementController(self.picar)
             
             # Start accepting connections
             while self.running:
