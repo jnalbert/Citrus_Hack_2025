@@ -113,7 +113,7 @@ class VideoStreamServer:
                 
                 # Get sensor data
                 ultrasonic_data = self.px.ultrasonic.read()
-                print(f"Ultrasonic data: {ultrasonic_data}")
+                # print(f"Ultrasonic data: {ultrasonic_data}")
                 
                 # Create a data package containing both frame and sensor data
                 data_package = {
