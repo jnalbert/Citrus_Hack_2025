@@ -5,6 +5,7 @@ This module handles the basic movement operations for the PiCar-X Smart Service 
 """
 import time
 from picarx import Picarx
+from robot_hat import TTS
 import logging
 import random
 
@@ -15,13 +16,17 @@ logging.basicConfig(level=logging.INFO,
 logger = logging.getLogger(__name__)
 
 class MovementController:
-    def __init__(self):
+    def __init__(self, picar=None):
         """Initialize the PiCar-X movement controller."""
         try:
-            self.px = Picarx()
+            if picar is None:
+                self.px = Picarx()
+            else:
+                self.px = picar
             # Initialize straight-line correction parameters
             self.drift_correction = 0  # Default correction value
             self.obstacle_threshold = 20  # Distance in cm to trigger obstacle avoidance
+            self.tts = TTS()
             self.last_error = 0
             self.straight_kp = 0.5  # Proportional gain
             self.straight_kd = 0.2  # Derivative gain
@@ -231,6 +236,9 @@ class MovementController:
 # Example usage
 if __name__ == "__main__":
     controller = MovementController()
+    controller.tts.lang("en-US")
+    controller.tts.say("Hello, I am your PiCar-X. Let's start moving!")
+    time.sleep(2)
     try:
         print("Starting autonomous navigation. Press Ctrl+C to exit.")
         # --- parameters you can tweak ---
@@ -254,7 +262,9 @@ if __name__ == "__main__":
             # 3) If too close, stop and evade
             if 0 < dist < controller.obstacle_threshold:
                 print("[Alert] Obstacle detected—evading!")
+                controller.tts.say("Obstacle detected, evading!")
                 controller.stop()
+                time.sleep(0.5)
 
                 # 3a) Back up with a random steering bias
                 if random.random() < 0.5:
