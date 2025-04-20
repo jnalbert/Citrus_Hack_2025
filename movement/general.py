@@ -4,8 +4,8 @@ PiCar-X Movement Controller
 This module handles the basic movement operations for the PiCar-X Smart Service Dog project.
 """
 import time
-# Replace OpenCV with Vilib
-import vilib
+from robot_hat import TTS
+from vilib import Vilib
 from picarx import Picarx
 import logging
 
@@ -14,11 +14,14 @@ logging.basicConfig(level=logging.INFO,
                     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
+
 class MovementController:
     def __init__(self):
         """Initialize the PiCar-X movement controller."""
         try:
             self.px = Picarx()
+            # Obstacle detection threshold (cm) and TTS setup
+            self.obstacle_threshold = 20  # Distance in cm to trigger obstacle detection
             # Initialize straight-line correction parameters
             self.drift_correction = 0  # Default correction value
             self.last_error = 0
@@ -26,15 +29,8 @@ class MovementController:
             self.straight_kd = 0.2  # Derivative gain
             
             # Initialize camera using Vilib
-            vilib.camera_start(vflip=False, hflip=False)  # Adjust flip parameters if needed
-            vilib.display(False)  # Don't display the camera stream by default
-            
-            # Set camera resolution
-            vilib.camera_config(width=320, height=240)
-            
-            # Initialize line detection
-            vilib.line_detect_switch(True)
-            vilib.line_detect_set_roi(0, 140, 320, 100)  # Set ROI: x, y, width, height
+            Vilib.camera_start(vflip=False, hflip=False)  # Adjust flip parameters if needed
+            Vilib.display(False)  # Don't display the camera stream by default
             
             logger.info("PiCar-X movement controller initialized successfully")
         except Exception as e:
@@ -56,6 +52,14 @@ class MovementController:
             
             start_time = time.time()
             while duration is None or time.time() - start_time < duration:
+                # Ultrasonic-based obstacle detection
+                dist = self.px.ultrasonic.read()
+                logger.debug(f"Ultrasonic distance: {dist:.2f} cm")
+                if dist is not None and dist < self.obstacle_threshold:
+                    logger.info(f"Obstacle detected at {dist:.2f} cm, stopping")
+                    # Speak the detection alert
+                    return
+                
                 if maintain_straight:
                     self._apply_straight_line_correction(speed)
                 else:
@@ -82,10 +86,10 @@ class MovementController:
         """
         try:
             # Get line detection results from Vilib
-            line_status = vilib.line_detect_get_status()
+            line_status = Vilib.line_detect_get_status()
             
             if line_status:  # If a line is detected
-                line_info = vilib.line_detect_get_result()
+                line_info = Vilib.line_detect_get_result()
                 
                 # Get the center of line
                 if 'center_x' in line_info:
@@ -202,7 +206,7 @@ class MovementController:
             logger.info("Cleaning up resources")
             self.stop()
             # Release Vilib camera resources
-            vilib.camera_close()
+            Vilib.camera_close()
             # Add any additional cleanup here
         except Exception as e:
             logger.error(f"Error during cleanup: {e}")
@@ -211,25 +215,44 @@ class MovementController:
 # Example usage
 if __name__ == "__main__":
     controller = MovementController()
+    tts = TTS()
+    tts.lang("en-US")
     
+    # try:
+    #     # Test sequence
+    #     print("Moving forward with straight-line correction...")
+    #     controller.move_forward(speed=200, duration=2, maintain_straight=True)
+        
+    #     print("Turning left...")
+    #     controller.turn_left(angle=30, speed=10)
+    #     time.sleep(1)
+        
+    #     print("Turning right...")
+    #     controller.turn_right(angle=30, speed=10)
+    #     time.sleep(1)
+        
+    #     print("Moving in reverse...")
+    #     controller.reverse(speed=40, duration=2)
+        
+    #     print("Stopping...")
+    #     controller.stop()
+
+
     try:
-        # Test sequence
-        print("Moving forward with straight-line correction...")
-        controller.move_forward(speed=50, duration=3, maintain_straight=True)
-        
-        print("Turning left...")
-        controller.turn_left(angle=30, speed=40)
-        time.sleep(2)
-        
-        print("Turning right...")
-        controller.turn_right(angle=30, speed=40)
-        time.sleep(2)
-        
-        print("Moving in reverse...")
-        controller.reverse(speed=40, duration=2)
-        
-        print("Stopping...")
-        controller.stop()
+        while True:
+            # Example of continuous movement
+            controller.move_forward(speed=50, duration=1, maintain_straight=True)
+            time.sleep(0.1)
+
+            if controller.px.ultrasonic.read() < controller.obstacle_threshold:
+                controller.stop()
+                words = "Obstacle detected, stopping."
+                tts.say(words)
+                time.sleep(1)
+                controller.reverse(speed=50, duration=1)
+                controller.stop()
+                time.sleep(1)
+                break
         
     except KeyboardInterrupt:
         print("Program interrupted by user")
