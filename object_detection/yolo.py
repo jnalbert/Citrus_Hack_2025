@@ -86,7 +86,7 @@ unknown_color = (128, 128, 128)  # Grey color for unknown objects
 # videoCap.release()
 # cv2.destroyAllWindows()
 
-def get_bounding_boxes(frame, model, conf=0.6, iou=0.7):
+def get_bounding_boxes(frame, model, conf=0.6, iou=0.8):
     """
     Process frame with YOLO detection and tracking
     

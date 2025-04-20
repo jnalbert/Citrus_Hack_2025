@@ -330,7 +330,7 @@ class VideoStreamClient:
                     detection_frame = cv2.resize(detection_frame, (self.detection_width, new_h))
             
             # Get detection results (faster on smaller frame)
-            boxed_frame, results = get_bounding_boxes(detection_frame, self.detection_model, conf=0.3)
+            boxed_frame, results = get_bounding_boxes(detection_frame, self.detection_model, conf=0.7)
             
             # Update detection history and smooth bounding boxes
             self.update_detection_history(results, 
