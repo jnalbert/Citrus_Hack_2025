@@ -197,6 +197,7 @@ class VideoStreamServer:
     
     def get_frame(self):
         """Get a frame from the camera based on platform"""
+        frame = None
         if self.is_pi:
             # PiCamera2 capture
             frame = self.video_capture.capture_array()
