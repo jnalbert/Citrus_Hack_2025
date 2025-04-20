@@ -14,6 +14,7 @@ import numpy as np
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from ultralytics import YOLO  # Assuming using YOLO for object detection
 from object_detection.yolo import get_bounding_boxes, getColours
+from navigation.navigation import generate_action_from_bounding_boxes
 
 class VideoStreamClient:
     def __init__(self, host=None, port=8080, buffer_size=10):
@@ -401,7 +402,7 @@ class VideoStreamClient:
                     detection_frame = cv2.resize(detection_frame, (self.detection_width, new_h))
             
             # Get detection results (faster on smaller frame)
-            boxed_frame, results = get_bounding_boxes(detection_frame, self.detection_model, conf=0.7)
+            boxed_frame, results = get_bounding_boxes(detection_frame, self.detection_model, conf=0.8)
             
             # Update detection history and smooth bounding boxes
             self.update_detection_history(results, 
@@ -766,29 +767,18 @@ class VideoStreamClient:
         steering_angle = 0.0  # Neutral steering
         speed = 0.5  # Half speed
         
+        bounding_boxes = []
+        for box in smoothed_boxes:
+            bounding_boxes.append({
+                'label': box['cls'],
+                'bbox': box['xyxy'],
+                'confidence': box['conf']
+            })
+        action = generate_action_from_bounding_boxes(bounding_boxes)
+        steering_angle = action['steering']
+        speed = action['speed']
+        
         # Example: if there are detections, adjust steering/speed based on object position
-        if smoothed_boxes:
-            # Just a simple example - you'll replace this with your logic
-            # Get the first detected object
-            box = smoothed_boxes[0]
-            x1, y1, x2, y2 = box['xyxy']
-            
-            # Calculate center of the box
-            center_x = (x1 + x2) / 2
-            
-            # Assuming frame width is known or can be obtained
-            if hasattr(self, 'current_frame') and self.current_frame is not None:
-                frame_width = self.current_frame.shape[1]
-                
-                # Calculate steering based on object position
-                # Center of frame = 0, left = negative, right = positive
-                steering_angle = (center_x - (frame_width / 2)) / (frame_width / 2)
-                
-                # Limit steering angle to range [-1, 1]
-                steering_angle = max(-1.0, min(1.0, steering_angle))
-                
-                # Reduce speed if object is detected (just an example)
-                speed = 0.3
         
         return steering_angle, speed
 
