@@ -511,6 +511,9 @@ class ControlServer:
             # Just print the commands in computer mode
             print(f"SIMULATION: Steering: {steering_angle:.2f}, Speed: {speed:.2f}")
             return
+          
+        # make a non blockking call to move the car forward
+        self.car_controller.move_forward(speed)
             
         # Implementation for Raspberry Pi with actual hardware
         try:
