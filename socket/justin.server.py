@@ -534,18 +534,15 @@ class ControlServer:
         
         try:
             if self.car_controller is not None:
-            
+                motor_speed = abs(speed * 100.0)
             # Rotate 5 degrees
                 if steering_angle < 0:
                     self.car_controller.turn_right(steering_angle, motor_speed)
                 else:
                     self.car_controller.turn_left(steering_angle, motor_speed)
-                time.sleep(0.5)  # Rotate for 0.5 seconds
             
             # Move forward for 0.5 seconds
-                motor_speed = abs(speed * 100.0)
-                self.car_controller.move_forward(motor_speed)
-                time.sleep(0.5)  # Move forward for 0.5 seconds
+                self.car_controller.move_forward(motor_speed, 0.5)
 
             # Rotate 5 degrees
                   # Convert degrees to a normalized value (-1.0 to 1.0)
@@ -553,12 +550,8 @@ class ControlServer:
                     self.car_controller.turn_left(steering_angle, motor_speed)
                 else:
                     self.car_controller.turn_right(steering_angle, motor_speed)
-                time.sleep(0.5)  # Rotate for 0.5 seconds
             
-            # Move forward for 0.5 seconds
-                motor_speed = abs(speed * 100.0)
-                self.car_controller.move_forward(motor_speed)
-                time.sleep(0.5)  # Move forward for 0.5 seconds
+                self.car_controller.move_forward(motor_speed, 0.2)
             
             # Stop the robot after the movement
                 self.car_controller.stop()
