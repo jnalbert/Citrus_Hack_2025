@@ -6,8 +6,7 @@ import threading
 import queue
 import time
 import json
-
-# import sys
+import sys
 import os
 import numpy as np
 
@@ -18,31 +17,22 @@ from object_detection.yolo import get_bounding_boxes, getColours
 
 class VideoStreamClient:
     def __init__(self, host=None, port=9999, buffer_size=10):
-        """
-        Initialize the video streaming client
-        
-        Args:
-            host (str): Host IP to connect to. If None, will prompt user
-            port (int): Port to connect to. Default 9999
-            buffer_size (int): Max number of frames to buffer
-        """
         self.host = host
         self.port = port
-        self.control_port = control_port
+        self.control_host = host  # Same as video stream by default
+        self.control_port = 9090  # Default control port
         self.client_socket = None
+        self.control_socket = None
         self.running = False
         self.frame_buffer = queue.Queue(maxsize=buffer_size)
         self.current_frame = None
         self.current_sensor_data = {}
         self.detection_model = None
         self.detection_in_progress = False
-        
+
     def connect_to_server(self):
-        """Connect to the video streaming server"""
         try:
             self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            
-            # Get server address if not provided
             if self.host is None:
                 self.host = input("Enter server IP address: ")
             print(f"Connecting to server at {self.host}:{self.port}")
@@ -55,44 +45,78 @@ class VideoStreamClient:
             print(f"Error connecting to server: {e}")
             self.cleanup()
             return False
-    
+
+    def listen_for_controls(self):
+        try:
+            self.control_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.control_socket.connect((self.control_host, self.control_port))
+            print(f"Connected to control server at {self.control_host}:{self.control_port}")
+
+            buffer = b""
+            while self.running:
+                data = self.control_socket.recv(1024)
+                if not data:
+                    break
+                buffer += data
+                while b"\n" in buffer:
+                    line, buffer = buffer.split(b"\n", 1)
+                    try:
+                        msg = json.loads(line.decode('utf-8'))
+                        self.current_sensor_data.update({
+                            "steering": msg.get("steering"),
+                            "speed": msg.get("speed")
+                        })
+                        print(f"Received control: {self.current_sensor_data}")
+                    except json.JSONDecodeError:
+                        print("Invalid control message received.")
+        except Exception as e:
+            print(f"Control connection error: {e}")
+        finally:
+            if self.control_socket:
+                self.control_socket.close()
+                print("Control socket closed")
+
+    def cleanup(self):
+        self.running = False
+        if self.client_socket:
+            try:
+                self.client_socket.close()
+            except:
+                pass
+            self.client_socket = None
+        if self.control_socket:
+            try:
+                self.control_socket.close()
+            except:
+                pass
+            self.control_socket = None
+        cv2.destroyAllWindows()
+        print("Client resources cleaned up")
+
     def start(self):
-        """Start the client with frame reception and processing threads"""
         if not self.connect_to_server():
             return
-        
-        # Initialize YOLO model
+
         try:
             print("Loading YOLO model...")
-            # Use a smaller and faster model for better performance
             model_path = 'object_detection/yoloe-11s-seg-pf.pt'
-            
-            # Try CPU if MPS is slow, or try CUDA if available
             self.detection_model = YOLO(model_path)
-            
-            # Optional: Use export model for even faster inference
-            # self.detection_model.export(format='onnx')  # Export once
-            # self.detection_model = YOLO('object_detection/yoloe-11s-seg-pf.onnx')  # Use exported model
-            
             print("YOLO model loaded successfully")
         except Exception as e:
             print(f"Error loading YOLO model: {e}")
             print("Object detection will be disabled")
-        
-        # Start frame reception thread
+
         reception_thread = threading.Thread(target=self.receive_frames, daemon=True)
         reception_thread.start()
-        
-        # Start frame processing thread
+
         processing_thread = threading.Thread(target=self.process_frames, daemon=True)
         processing_thread.start()
 
-        # Start control command listener
         self.control_thread = threading.Thread(target=self.listen_for_controls, daemon=True)
         self.control_thread.start()
-        
-        # Display frames in main thread
+
         self.display_frames()
+
     
     def decompress_frame(self, compressed_frame):
         """Decompress JPEG frame data back to numpy array"""
