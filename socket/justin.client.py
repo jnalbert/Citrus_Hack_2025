@@ -48,9 +48,9 @@ class VideoStreamClient:
         
         # Box tracking and stabilization
         self.detection_history = {}  # Track objects by ID
-        self.history_length = 3      # Number of frames to keep in history
-        self.min_detection_frames = 2  # Minimum frames an object must be detected to display
-        self.process_every_n_frames = 2  # Only process every N frames
+        self.history_length = 2      # Number of frames to keep in history
+        self.min_detection_frames = 1  # Minimum frames an object must be detected to display
+        self.process_every_n_frames = 1  # Only process every N frames
         self.frame_counter = 0
         
         # Performance settings
@@ -776,9 +776,9 @@ class VideoStreamClient:
                 'bbox': box['xyxy'],
                 'confidence': box['conf']
             })
-        # action = generate_action_from_bounding_boxes(bounding_boxes)
-        # steering_angle = action['steering']
-        # speed = action['speed']
+        action = generate_action_from_bounding_boxes(bounding_boxes)
+        steering_angle = action['steering']
+        speed = action['speed']
         
         # Example: if there are detections, adjust steering/speed based on object position
         

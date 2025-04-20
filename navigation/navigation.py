@@ -102,7 +102,7 @@ def generate_action(clear_path, num_zones):
         normalized_deviation = deviation_from_center / (num_zones / 2)  # -1 to 1
 
         steering_angle = normalized_deviation * 20.0  # Adjust max steering angle.  Adjust this scaling factor!
-        speed = 0.5  # Base speed, adjust as needed
+        speed = 0.003  # Base speed, adjust as needed
         return {'steering': steering_angle, 'speed': speed}
     else:
         return {'steering': 0.0, 'speed': 0.0}  # Stop if no clear path
@@ -139,4 +139,4 @@ def generate_action_from_bounding_boxes(bounding_boxes):
 
     # Generate an action
     action = generate_action(clear_path, HISTOGRAM_ZONES)
-    print("Action:", action)
+    return action
