@@ -54,10 +54,15 @@ class VideoStreamClient:
         self.original_size = None   # Store original frame size
         
         # Network optimization settings
-        self.recv_buffer_size = 65536  # 64KB buffer for socket operations
+        self.recv_buffer_size = 131072  # 128KB buffer for socket operations (increased from 64KB)
         self.reception_fps = 0         # Track reception frame rate
         self.reception_frame_count = 0
         self.reception_start_time = time.time()
+        self.current_jpeg_quality = 0  # Track quality reported by server
+        self.last_packet_size = 0      # Track last packet size
+        
+        # Thread synchronization
+        self.frame_ready_event = threading.Event()
         
     def connect_to_server(self):
         """Connect to the video streaming server"""
@@ -67,6 +72,9 @@ class VideoStreamClient:
             
             # Set socket options for better streaming performance
             self.client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, self.recv_buffer_size)
+            
+            # Disable Nagle's algorithm to reduce latency
+            self.client_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             
             # Get server address if not provided
             if self.host is None:
@@ -125,6 +133,25 @@ class VideoStreamClient:
         """Decompress JPEG frame data back to numpy array"""
         return cv2.imdecode(np.frombuffer(compressed_frame, dtype=np.uint8), cv2.IMREAD_COLOR)
     
+    def decompress_frame_with_roi(self, compressed_data):
+        """Decompress frame with ROI overlay for higher quality center region"""
+        # Extract components
+        full_frame_data = compressed_data['full_frame']
+        roi_data = compressed_data['roi']
+        roi_x, roi_y, roi_w, roi_h = compressed_data['roi_pos']
+        
+        # Decompress full frame (lower quality)
+        full_frame = self.decompress_frame(full_frame_data)
+        
+        # Decompress ROI (higher quality)
+        roi = self.decompress_frame(roi_data)
+        
+        # Overlay ROI on full frame
+        if full_frame is not None and roi is not None:
+            full_frame[roi_y:roi_y+roi_h, roi_x:roi_x+roi_w] = roi
+            
+        return full_frame
+    
     def receive_frames(self):
         """Receive and buffer video frames from the server (producer)"""
         try:
@@ -152,20 +179,38 @@ class VideoStreamClient:
                 while len(data) < msg_size:
                     data += self.client_socket.recv(self.recv_buffer_size)
                 
-                # Extract the frame
+                # Extract the data package
                 package_data = data[:msg_size]
                 data = data[msg_size:]
+                
+                # Track packet size
+                self.last_packet_size = len(package_data) / 1024  # KB
+                
+                # Measure time for decompression
+                decomp_start = time.time()
                 
                 # Deserialize the data package
                 data_package = pickle.loads(package_data)
                 
-                # Extract and decompress frame and sensor data
-                if 'frame_compressed' in data_package:
+                # Store JPEG quality reported by server
+                self.current_jpeg_quality = data_package.get('jpeg_quality', 0)
+                
+                # Extract and decompress frame using appropriate method
+                frame = None
+                
+                # Handle ROI-based compression if available
+                if 'frame_compressed_roi' in data_package:
+                    compressed_data = data_package['frame_compressed_roi']
+                    frame = self.decompress_frame_with_roi(compressed_data)
+                # Handle standard compression
+                elif 'frame_compressed' in data_package:
                     compressed_frame = data_package['frame_compressed']
                     frame = self.decompress_frame(compressed_frame)
+                # Fallback for backward compatibility
                 else:
-                    # Fallback for backward compatibility
                     frame = data_package.get('frame')
+                
+                decomp_time = (time.time() - decomp_start) * 1000  # ms
                 
                 if frame is None:
                     continue
@@ -178,11 +223,17 @@ class VideoStreamClient:
                 self.current_sensor_data = {
                     'ultrasonic': data_package.get('ultrasonic', 0),
                     'timestamp': data_package.get('timestamp', time.time()),
-                    'frame_count': data_package.get('frame_count', 0)
+                    'frame_count': data_package.get('frame_count', 0),
+                    'jpeg_quality': self.current_jpeg_quality,
+                    'packet_size_kb': self.last_packet_size,
+                    'decomp_time_ms': decomp_time
                 }
                 
                 # Update current frame (latest frame always available)
-                self.current_frame = frame.copy()
+                self.current_frame = frame
+                
+                # Signal that a new frame is ready
+                self.frame_ready_event.set()
                 
                 # Add to buffer if space available (non-blocking)
                 try:
@@ -224,13 +275,18 @@ class VideoStreamClient:
                     # Get a frame for processing
                     frame_data = None
                     
-                    # Prefer current_frame over buffered frames for most up-to-date processing
-                    if self.current_frame is not None:
-                        frame_data = {
-                            'frame': self.current_frame.copy(),
-                            'sensor_data': self.current_sensor_data
-                        }
+                    # Wait for a new frame with timeout
+                    if self.frame_ready_event.wait(timeout=0.1):
+                        self.frame_ready_event.clear()  # Reset event
+                        
+                        # Prefer current_frame over buffered frames
+                        if self.current_frame is not None:
+                            frame_data = {
+                                'frame': self.current_frame.copy(),
+                                'sensor_data': self.current_sensor_data
+                            }
                     elif not self.frame_buffer.empty():
+                        # If no new frame but buffer has frames, use from buffer
                         frame_data = self.frame_buffer.get()
                     
                     if frame_data is not None:
@@ -460,10 +516,22 @@ class VideoStreamClient:
                         frame_count = 0
                         fps_start_time = time.time()
                     
-                    # Display FPS in overlay
-                    cv2.putText(display_frame, 
-                              f"Display: {display_fps:.1f} FPS | Detection: {self.processing_fps:.1f} FPS | Receive: {self.reception_fps:.1f} FPS", 
-                              (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                    # Display FPS and quality information in overlay
+                    cv2.putText(
+                        display_frame, 
+                        f"Disp: {display_fps:.1f} FPS | Det: {self.processing_fps:.1f} FPS | Recv: {self.reception_fps:.1f} FPS | Q: {self.current_jpeg_quality}", 
+                        (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1
+                    )
+                    
+                    # Display network stats in second line
+                    if 'packet_size_kb' in self.current_sensor_data and 'decomp_time_ms' in self.current_sensor_data:
+                        kb = self.current_sensor_data['packet_size_kb']
+                        ms = self.current_sensor_data['decomp_time_ms']
+                        cv2.putText(
+                            display_frame, 
+                            f"Size: {kb:.1f} KB | Decomp: {ms:.1f} ms", 
+                            (10, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1
+                        )
                     
                     # Display the frame - this is a potentially slow operation
                     cv2.imshow('Stream', display_frame)
@@ -545,7 +613,7 @@ class VideoStreamClient:
         # Only display ultrasonic data to reduce rendering overhead
         if ultrasonic is not None:
             cv2.putText(frame, f"Dist: {ultrasonic:.1f}cm", 
-                       (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 1)  # Simpler, faster text
+                       (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)  # Simpler, faster text
     
     def cleanup(self):
         """Clean up resources"""
