@@ -149,6 +149,26 @@ class VideoStreamClient:
         if not self.connect_to_server():
             return
         
+        # Connect to control socket
+        try:
+            self.control_host = self.host  # Use same host as video stream
+            print(f"Connecting to control server at {self.control_host}:{self.control_port}")
+            self.control_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.control_socket.connect((self.control_host, self.control_port))
+            
+            # Set TCP_NODELAY to reduce latency
+            self.control_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
+            
+            # Start thread to listen for control messages
+            control_thread = threading.Thread(target=self.listen_for_controls)
+            control_thread.daemon = True
+            control_thread.start()
+            
+            print("Connected to control server successfully")
+        except Exception as e:
+            print(f"Warning: Could not connect to control server: {e}")
+            print("Object detection results will not be sent back to server")
+        
         # Initialize YOLO model - use smaller model for performance
         try:
             print("Loading YOLO model...")
@@ -530,6 +550,7 @@ class VideoStreamClient:
             frame_count = 0
             last_smoothed_boxes = []  # Cache last valid set of boxes
             last_boxes_time = 0
+            last_result_sent_time = 0  # Track when we last sent results
             
             while self.running:
                 # Get the latest frame
@@ -551,6 +572,23 @@ class VideoStreamClient:
                     elif smoothed_boxes:
                         last_smoothed_boxes = smoothed_boxes
                         last_boxes_time = time.time()
+                        
+                        # Send detection results to server (limit frequency to avoid network congestion)
+                        current_time = time.time()
+                        if current_time - last_result_sent_time > 0.1:  # Send at most 10 times per second
+                            # Calculate steering angle and speed based on detections
+                            steering_angle, speed = self.calculate_control_commands(smoothed_boxes)
+                            
+                            # Send control commands to the Raspberry Pi
+                            success = self.send_control_commands(steering_angle, speed)
+                            if success:
+                                last_result_sent_time = current_time
+                                # Display what was sent in the frame for debugging
+                                cv2.putText(
+                                    display_frame, 
+                                    f"Sent: Steering={steering_angle:.2f}, Speed={speed:.2f}", 
+                                    (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1
+                                )
                     
                     # Draw boxes efficiently
                     self.draw_smoothed_boxes(display_frame, smoothed_boxes)
@@ -682,6 +720,77 @@ class VideoStreamClient:
         cv2.destroyAllWindows()
         
         print("Client resources cleaned up")
+
+    def send_control_commands(self, steering_angle, speed):
+        """
+        Send control commands (steering angle and speed) back to the Raspberry Pi
+        
+        Args:
+            steering_angle: The steering angle to send
+            speed: The speed value to send
+        """
+        if not self.control_socket:
+            print("No control socket connection available")
+            return False
+            
+        try:
+            # Create the control command message
+            message = {
+                "type": "control_commands",
+                "timestamp": time.time(),
+                "steering_angle": float(steering_angle),
+                "speed": float(speed)
+            }
+            
+            # Convert to JSON and send with newline terminator
+            json_message = json.dumps(message) + "\n"
+            self.control_socket.sendall(json_message.encode('utf-8'))
+            return True
+            
+        except Exception as e:
+            print(f"Error sending control commands: {e}")
+            return False
+    
+    def calculate_control_commands(self, smoothed_boxes):
+        """
+        Calculate steering angle and speed based on detected objects
+        This is a placeholder for your actual implementation
+        
+        Args:
+            smoothed_boxes: List of detected objects
+        
+        Returns:
+            Tuple of (steering_angle, speed)
+        """
+        # PLACEHOLDER - Replace with your actual logic
+        steering_angle = 0.0  # Neutral steering
+        speed = 0.5  # Half speed
+        
+        # Example: if there are detections, adjust steering/speed based on object position
+        if smoothed_boxes:
+            # Just a simple example - you'll replace this with your logic
+            # Get the first detected object
+            box = smoothed_boxes[0]
+            x1, y1, x2, y2 = box['xyxy']
+            
+            # Calculate center of the box
+            center_x = (x1 + x2) / 2
+            
+            # Assuming frame width is known or can be obtained
+            if hasattr(self, 'current_frame') and self.current_frame is not None:
+                frame_width = self.current_frame.shape[1]
+                
+                # Calculate steering based on object position
+                # Center of frame = 0, left = negative, right = positive
+                steering_angle = (center_x - (frame_width / 2)) / (frame_width / 2)
+                
+                # Limit steering angle to range [-1, 1]
+                steering_angle = max(-1.0, min(1.0, steering_angle))
+                
+                # Reduce speed if object is detected (just an example)
+                speed = 0.3
+        
+        return steering_angle, speed
 
 def main():
     # Create client

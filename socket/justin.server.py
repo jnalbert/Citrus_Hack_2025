@@ -1,21 +1,32 @@
 import socket
+import threading
 import cv2
 import pickle
 import struct
 import sys
 import time
+import json
 import numpy as np
-from picamera2 import Picamera2
-from picarx import Picarx
+
+# Determine if running on Raspberry Pi or regular computer
+IS_RASPBERRY_PI = True  # Default assumption
+try:
+    # Try to import Raspberry Pi specific libraries
+    from picamera2 import Picamera2
+    from picarx import Picarx
+except ImportError:
+    IS_RASPBERRY_PI = False
+    print("Raspberry Pi libraries not found. Running in computer mode.")
 
 class VideoStreamServer:
-    def __init__(self, host='0.0.0.0', port=8080):
+    def __init__(self, host='0.0.0.0', port=8080, is_pi=None):
         """
         Initialize the video streaming server
         
         Args:
             host (str): Host IP to bind to. Default '0.0.0.0' (all interfaces)
             port (int): Port to bind to. Default 8080
+            is_pi (bool): Force Pi mode (True) or computer mode (False). None for auto-detect.
         """
         self.host = host
         self.port = port
@@ -24,6 +35,7 @@ class VideoStreamServer:
         self.video_capture = None
         self.running = False
         self.px = None
+        self.is_pi = IS_RASPBERRY_PI if is_pi is None else is_pi
         
         # Performance optimization settings
         self.frame_count = 0
@@ -85,13 +97,48 @@ class VideoStreamServer:
             print(f"Clients should connect to this address")
             
             self.running = True
-            self.px = Picarx()
+            
+            # Initialize PiCar if on Raspberry Pi
+            if self.is_pi:
+                try:
+                    self.px = Picarx()
+                    print("PiCar-X initialized")
+                except Exception as e:
+                    print(f"Error initializing PiCar: {e}")
+            else:
+                print("Running in computer mode - PiCar functionality disabled")
+                
             return True
         
         except Exception as e:
             print(f"Error setting up server: {e}")
             self.cleanup()
             return False
+    
+    def init_camera(self):
+        """Initialize the camera based on platform"""
+        if self.is_pi:
+            # Initialize Picamera2 with optimized settings
+            self.video_capture = Picamera2()
+            config = self.video_capture.create_preview_configuration(
+                main={"size": self.resolution, "format": "RGB888"}
+            )
+            self.video_capture.configure(config)
+            self.video_capture.start()
+        else:
+            # Initialize webcam using OpenCV
+            self.video_capture = cv2.VideoCapture(0)
+            self.video_capture.set(cv2.CAP_PROP_FRAME_WIDTH, self.resolution[0])
+            self.video_capture.set(cv2.CAP_PROP_FRAME_HEIGHT, self.resolution[1])
+            
+            # Check if camera opened successfully
+            if not self.video_capture.isOpened():
+                print("Error: Could not open webcam")
+                return False
+                
+        # Wait a moment for camera to initialize
+        time.sleep(0.5)
+        return True
     
     def start_streaming(self):
         """Accept connections and stream video to clients"""
@@ -109,13 +156,13 @@ class VideoStreamServer:
                 # Configure client socket for performance
                 self.client_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
                 
-                # Initialize Picamera2 with optimized settings
-                self.video_capture = Picamera2()
-                config = self.video_capture.create_preview_configuration(
-                    main={"size": self.resolution, "format": "RGB888"}
-                )
-                self.video_capture.configure(config)
-                self.video_capture.start()
+                # Initialize camera
+                if not self.init_camera():
+                    print("Failed to initialize camera")
+                    if self.client_socket:
+                        self.client_socket.close()
+                        self.client_socket = None
+                    continue
                 
                 # Wait a moment for camera to initialize
                 time.sleep(0.5)
@@ -128,9 +175,8 @@ class VideoStreamServer:
                     self.client_socket.close()
                     self.client_socket = None
                 
-                if self.video_capture:
-                    self.video_capture.stop()
-                    self.video_capture = None
+                # Release camera
+                self.release_camera()
         
         except KeyboardInterrupt:
             print("\nServer stopped by user")
@@ -139,6 +185,30 @@ class VideoStreamServer:
         finally:
             self.cleanup()
     
+    def release_camera(self):
+        """Release camera resources based on platform"""
+        if self.video_capture:
+            if self.is_pi:
+                if hasattr(self.video_capture, 'stop'):
+                    self.video_capture.stop()
+            else:
+                self.video_capture.release()
+            self.video_capture = None
+    
+    def get_frame(self):
+        """Get a frame from the camera based on platform"""
+        if self.is_pi:
+            # PiCamera2 capture
+            frame = self.video_capture.capture_array()
+        else:
+            # OpenCV capture
+            ret, frame = self.video_capture.read()
+            if not ret:
+                print("Error: Failed to capture frame")
+                return None
+        
+        return frame
+            
     def compress_frame(self, frame, quality=None):
         """Compress frame to JPEG format for efficient transmission"""
         # Use provided quality or instance default
@@ -213,20 +283,26 @@ class VideoStreamServer:
                     time.sleep(0.001)  # Short sleep to prevent CPU hogging
                     continue
                 
-                # Read a frame from the Picamera2
-                frame = self.video_capture.capture_array()
+                # Read a frame from the camera
+                frame = self.get_frame()
+                if frame is None:
+                    continue
                 
                 # Get sensor data (less frequently than frames)
                 if current_time - last_sensor_read_time > sensor_read_interval:
-                    try:
-                        ultrasonic_data = self.px.ultrasonic.read()
-                        last_sensor_read_time = current_time
-                    except:
-                        # If sensor read fails, just continue with last value
-                        pass
+                    if self.is_pi and self.px:
+                        try:
+                            ultrasonic_data = self.px.ultrasonic.read()
+                            last_sensor_read_time = current_time
+                        except:
+                            # If sensor read fails, just continue with last value
+                            pass
+                    else:
+                        # Simulate ultrasonic data in computer mode
+                        ultrasonic_data = 100.0  # Fixed distance of 100cm
                 
-                # Convert from BGR to RGB (if needed)
-                if frame.shape[2] == 3:  # Only if it's a color image
+                # Convert from BGR to RGB if using OpenCV
+                if not self.is_pi and frame.shape[2] == 3:
                     frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 
                 # Choose compression method
@@ -313,19 +389,204 @@ class VideoStreamServer:
             self.server_socket = None
         
         # Release the video capture
-        if self.video_capture:
-            if hasattr(self.video_capture, 'stop'):
-                self.video_capture.stop()
-            self.video_capture = None
+        self.release_camera()
         
         print("Server resources cleaned up")
+        
+class ControlServer:
+    def __init__(self, host='0.0.0.0', port=9090, is_pi=None):
+        self.host = host
+        self.port = port
+        self.server_socket = None
+        self.running = True
+        self.current_steering = 0.0
+        self.current_speed = 0.0
+        self.client_connections = []
+        self.is_pi = IS_RASPBERRY_PI if is_pi is None else is_pi
+        self.picar = None
+        
+    def start(self):
+        """Start the control server"""
+        try:
+            # Create socket
+            self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            
+            # Bind the socket
+            self.server_socket.bind((self.host, self.port))
+            self.server_socket.listen(5)
+            
+            print(f"Control server started on {self.host}:{self.port}")
+            
+            # Start accepting connections
+            while self.running:
+                try:
+                    client_socket, client_address = self.server_socket.accept()
+                    print(f"Control connection established from {client_address}")
+                    
+                    # Start a new thread to handle this client
+                    client_thread = threading.Thread(
+                        target=self.handle_client,
+                        args=(client_socket, client_address)
+                    )
+                    client_thread.daemon = True
+                    client_thread.start()
+                    
+                    self.client_connections.append((client_socket, client_thread))
+                    
+                except Exception as e:
+                    print(f"Error accepting connection: {e}")
+                    
+        except Exception as e:
+            print(f"Control server error: {e}")
+        finally:
+            self.cleanup()
+    
+    def handle_client(self, client_socket, client_address):
+        """Handle client connection and process commands"""
+        buffer = b""
+        
+        try:
+            while self.running:
+                # Receive data
+                data = client_socket.recv(1024)
+                if not data:
+                    break
+                    
+                buffer += data
+                
+                # Process complete messages (delimited by newlines)
+                while b"\n" in buffer:
+                    # Split at the first newline
+                    line, buffer = buffer.split(b"\n", 1)
+                    
+                    try:
+                        # Parse JSON message
+                        message = json.loads(line.decode('utf-8'))
+                        
+                        # Check message type
+                        if message.get("type") == "control_commands":
+                            steering_angle = message.get("steering_angle", 0.0)
+                            speed = message.get("speed", 0.0)
+                            
+                            # Update current values
+                            self.current_steering = steering_angle
+                            self.current_speed = speed
+                            
+                            # Apply control commands to the motor
+                            self.apply_control_commands(steering_angle, speed)
+                            
+                            # Print for debugging
+                            print(f"Received control: steering={steering_angle:.2f}, speed={speed:.2f}")
+                            
+                    except json.JSONDecodeError:
+                        print(f"Invalid JSON message: {line}")
+                    except Exception as e:
+                        print(f"Error processing message: {e}")
+        
+        except Exception as e:
+            print(f"Client handler error: {e}")
+        finally:
+            print(f"Client disconnected: {client_address}")
+            client_socket.close()
+            
+    def apply_control_commands(self, steering_angle, speed):
+        """
+        Apply steering and speed commands to the robot's motors
+        
+        Args:
+            steering_angle: Float between -1.0 and 1.0
+            speed: Float between -1.0 and 1.0
+        """
+        if not self.is_pi:
+            # Just print the commands in computer mode
+            print(f"SIMULATION: Steering: {steering_angle:.2f}, Speed: {speed:.2f}")
+            return
+            
+        # Implementation for Raspberry Pi with actual hardware
+        try:
+            if self.picar is not None:
+                # Map steering angle from [-1, 1] to your servo's range
+                # For example, if your servo range is -30 to 30 degrees:
+                angle = steering_angle * 30.0  # Convert to degrees
+                self.picar.set_dir_servo_angle(angle)
+                
+                # Map speed from [0, 1] to your motor speed range
+                # For example, if your motor range is 0 to 100:
+                motor_speed = abs(speed * 100.0)
+                if speed < 0:
+                    self.picar.backward(motor_speed)
+                else:
+                    self.picar.forward(motor_speed)
+        except Exception as e:
+            print(f"Error applying control commands: {e}")
+            
+    def cleanup(self):
+        """Clean up resources"""
+        self.running = False
+        
+        # Close all client connections
+        for client_socket, _ in self.client_connections:
+            try:
+                client_socket.close()
+            except:
+                pass
+        
+        # Close server socket
+        if self.server_socket:
+            try:
+                self.server_socket.close()
+            except:
+                pass
+            
+        print("Control server cleaned up")
 
 def main():
-    # Create server with default host and port
-    server = VideoStreamServer()
+    # Ask if running on Raspberry Pi or computer
+    try:
+        mode = input("Running on Raspberry Pi (0) or Computer (1)? ")
+        is_pi = mode.strip() != "1"
+    except:
+        # Default to auto-detect if input fails
+        is_pi = IS_RASPBERRY_PI
     
-    # Start streaming
-    server.start_streaming()
+    if is_pi:
+        print("Running in Raspberry Pi mode with hardware support")
+    else:
+        print("Running in computer mode with simulation")
+    
+    # Create servers with selected mode
+    video_server = VideoStreamServer(is_pi=is_pi)
+    control_server = ControlServer(is_pi=is_pi)
+    
+    # Share PiCar instance if on Raspberry Pi
+    if is_pi:
+        try:
+            picar = Picarx()
+            video_server.px = picar
+            control_server.picar = picar
+            print("PiCar-X initialized and shared between servers")
+        except Exception as e:
+            print(f"Error initializing shared PiCar: {e}")
+    
+    # Start servers in separate threads
+    video_thread = threading.Thread(target=video_server.start_streaming)
+    video_thread.daemon = True
+    video_thread.start()
+    
+    control_thread = threading.Thread(target=control_server.start)
+    control_thread.daemon = True
+    control_thread.start()
+    
+    try:
+        # Keep the main thread alive
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        print("\nServers stopped by user")
+    finally:
+        video_server.cleanup()
+        control_server.cleanup()
 
 if __name__ == "__main__":
     main()
