@@ -5,10 +5,10 @@ import struct
 import threading
 import queue
 import time
-from ultralytics import YOLO  # Assuming using YOLO for object detection
+# from ultralytics import YOLO  # Assuming using YOLO for object detection
 
 class VideoStreamClient:
-    def __init__(self, host=None, port=9999, buffer_size=10):
+    def __init__(self, host=None, port=8080, buffer_size=10):
         """
         Initialize the video streaming client
         

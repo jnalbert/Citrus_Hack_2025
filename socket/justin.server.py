@@ -26,7 +26,7 @@ class VideoStreamServer:
             # Create a socket that connects to an external server
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             # Doesn't actually connect, just sets up the socket
-            s.connect(("0.0.0.0", 80))
+            s.connect(("8.8.8.8", 80))
             local_ip = s.getsockname()[0]
             s.close()
             return local_ip
