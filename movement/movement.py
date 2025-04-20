@@ -188,7 +188,7 @@ class MovementController:
             # Ensure angle is positive for left turn
             angle = abs(angle)
             self.px.set_dir_servo_angle(angle)
-            # self.px.forward(speed)
+            self.px.forward(speed)
         except Exception as e:
             logger.error(f"Error turning left: {e}")
             self.stop()
@@ -206,7 +206,7 @@ class MovementController:
             # Ensure angle is negative for right turn
             angle = -abs(angle)
             self.px.set_dir_servo_angle(angle)
-            # self.px.forward(speed)
+            self.px.forward(speed)
         except Exception as e:
             logger.error(f"Error turning right: {e}")
             self.stop()

@@ -513,37 +513,20 @@ class ControlServer:
             return
           
         # make a non blockking call to move the car forward
-        '''self.car_controller.move_forward(speed)
-            
-        # Implementation for Raspberry Pi with actual hardware
-        
-            if self.car_controller is not None:
-                motor_speed = abs(speed * 100.0)
-                
-                # Have a threshold of 0.5
-                if steering_angle < 0.5 and steering_angle > -0.5:
-                    self.car_controller.move_forward(motor_speed)
-                elif steering_angle < 0:
-                    self.car_controller.turn_right(steering_angle, motor_speed)
-                elif steering_angle > 0:
-                    self.car_controller.turn_left(steering_angle, motor_speed)
-                else:
-                    self.car_controller.move_forward(motor_speed)
-        except Exception as e:
-            print(f"Error applying control commands: {e}")'''
         
         try:
-            if self.car_controller is not None:
+            if self.car_controller:
                 motor_speed = abs(speed * 100.0)
             # Rotate 5 degrees
+                self.car_controller.move_forward(motor_speed)
+            
                 if steering_angle < 0:
                     self.car_controller.turn_right(steering_angle, motor_speed)
                 else:
                     self.car_controller.turn_left(steering_angle, motor_speed)
+                    
+                time.sleep(1.5)
             
-            # Move forward for 0.5 seconds
-                self.car_controller.move_forward(motor_speed, 0.5)
-
             # Rotate 5 degrees
                   # Convert degrees to a normalized value (-1.0 to 1.0)
                 if steering_angle < 0:
@@ -551,7 +534,7 @@ class ControlServer:
                 else:
                     self.car_controller.turn_right(steering_angle, motor_speed)
             
-                self.car_controller.move_forward(motor_speed, 0.2)
+                time.sleep(0.5)
             
             # Stop the robot after the movement
                 self.car_controller.stop()
