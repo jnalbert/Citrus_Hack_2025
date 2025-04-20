@@ -30,14 +30,14 @@ class VideoStreamServer:
         self.start_time = 0
         self.frame_interval = 0.03  # Target 30+ FPS (33ms between frames)
         self.jpeg_quality = 70  # Slightly lower quality for faster transmission (was 80)
-        self.resolution = (320, 240)  # Keep resolution the same
+        self.resolution = (640, 480)  # Increased resolution from 320x240 to 640x480
         self.send_buffer_size = 1000000  # 1MB buffer for socket operations
         self.monitor_interval = 30  # Print stats every 30 frames
         
         # Adaptive parameters
         self.min_frame_interval = 0.01  # Maximum 100 FPS
         self.max_frame_interval = 0.1   # Minimum 10 FPS
-        self.target_packet_size = 20    # Target 20KB packet size
+        self.target_packet_size = 40    # Increased target packet size for higher resolution
         self.adaptive_quality = True    # Enable adaptive quality
         self.min_jpeg_quality = 40      # Minimum quality
         self.max_jpeg_quality = 85      # Maximum quality
