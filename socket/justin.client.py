@@ -7,17 +7,23 @@ import queue
 import time
 import json
 
-# from ultralytics import YOLO  # Uncomment when model is available
+# import sys
+import os
+import numpy as np
+
+# Add project root to Python path
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+from ultralytics import YOLO  # Uncomment when model is available
+from object_detection.yolo import get_bounding_boxes, getColours
 
 class VideoStreamClient:
-    def __init__(self, host=None, port=8080, control_port=9090, buffer_size=10):
+    def __init__(self, host=None, port=9999, buffer_size=10):
         """
         Initialize the video streaming client
         
         Args:
             host (str): Host IP to connect to. If None, will prompt user
-            port (int): Port to connect to for video stream
-            control_port (int): Port to listen for control commands
+            port (int): Port to connect to. Default 9999
             buffer_size (int): Max number of frames to buffer
         """
         self.host = host
@@ -27,20 +33,23 @@ class VideoStreamClient:
         self.running = False
         self.frame_buffer = queue.Queue(maxsize=buffer_size)
         self.current_frame = None
+        self.current_sensor_data = {}
         self.detection_model = None
         self.detection_in_progress = False
-        self.control_thread = None
         
     def connect_to_server(self):
         """Connect to the video streaming server"""
         try:
             self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            
+            # Get server address if not provided
             if self.host is None:
                 self.host = input("Enter server IP address: ")
             print(f"Connecting to server at {self.host}:{self.port}")
             self.client_socket.connect((self.host, self.port))
             print("Connected to server successfully")
             self.running = True
+            self.reception_start_time = time.time()
             return True
         except Exception as e:
             print(f"Error connecting to server: {e}")
@@ -52,10 +61,19 @@ class VideoStreamClient:
         if not self.connect_to_server():
             return
         
-        # Initialize YOLO model (optional)
+        # Initialize YOLO model
         try:
             print("Loading YOLO model...")
-            # self.detection_model = YOLO('object_detection/yolov8n.pt')
+            # Use a smaller and faster model for better performance
+            model_path = 'object_detection/yoloe-11s-seg-pf.pt'
+            
+            # Try CPU if MPS is slow, or try CUDA if available
+            self.detection_model = YOLO(model_path)
+            
+            # Optional: Use export model for even faster inference
+            # self.detection_model.export(format='onnx')  # Export once
+            # self.detection_model = YOLO('object_detection/yoloe-11s-seg-pf.onnx')  # Use exported model
+            
             print("YOLO model loaded successfully")
         except Exception as e:
             print(f"Error loading YOLO model: {e}")
@@ -76,6 +94,29 @@ class VideoStreamClient:
         # Display frames in main thread
         self.display_frames()
     
+    def decompress_frame(self, compressed_frame):
+        """Decompress JPEG frame data back to numpy array"""
+        return cv2.imdecode(np.frombuffer(compressed_frame, dtype=np.uint8), cv2.IMREAD_COLOR)
+    
+    def decompress_frame_with_roi(self, compressed_data):
+        """Decompress frame with ROI overlay for higher quality center region"""
+        # Extract components
+        full_frame_data = compressed_data['full_frame']
+        roi_data = compressed_data['roi']
+        roi_x, roi_y, roi_w, roi_h = compressed_data['roi_pos']
+        
+        # Decompress full frame (lower quality)
+        full_frame = self.decompress_frame(full_frame_data)
+        
+        # Decompress ROI (higher quality)
+        roi = self.decompress_frame(roi_data)
+        
+        # Overlay ROI on full frame
+        if full_frame is not None and roi is not None:
+            full_frame[roi_y:roi_y+roi_h, roi_x:roi_x+roi_w] = roi
+            
+        return full_frame
+    
     def receive_frames(self):
         """Receive and buffer video frames from the server (producer)"""
         try:
@@ -84,7 +125,7 @@ class VideoStreamClient:
             
             while self.running:
                 while len(data) < payload_size:
-                    packet = self.client_socket.recv(4096)
+                    packet = self.client_socket.recv(self.recv_buffer_size)
                     if not packet:
                         self.running = False
                         break
@@ -98,19 +139,38 @@ class VideoStreamClient:
                 msg_size = struct.unpack("L", packed_msg_size)[0]
                 
                 while len(data) < msg_size:
-                    data += self.client_socket.recv(4096)
+                    data += self.client_socket.recv(self.recv_buffer_size)
                 
+                # Extract the frame
                 frame_data = data[:msg_size]
                 data = data[msg_size:]
                 
+                # Deserialize the frame
                 frame = pickle.loads(frame_data)
+                
+                # Update current frame (latest frame always available)
                 self.current_frame = frame.copy()
                 
                 try:
                     if not self.frame_buffer.full():
-                        self.frame_buffer.put_nowait(frame)
+                        # Store the frame with its sensor data
+                        frame_id = self.next_frame_id
+                        self.next_frame_id += 1
+                        self.frame_buffer_with_ids[frame_id] = {'frame': frame, 'sensor_data': self.current_sensor_data}
+                        self.frame_buffer.put_nowait(self.frame_buffer_with_ids[frame_id])
                 except:
                     pass
+                
+                # Update reception FPS metrics
+                self.reception_frame_count += 1
+                if self.reception_frame_count % 30 == 0:
+                    elapsed = time.time() - self.reception_start_time
+                    if elapsed > 0:
+                        self.reception_fps = self.reception_frame_count / elapsed
+                        # Reset counters every 300 frames for a more recent average
+                        if self.reception_frame_count >= 300:
+                            self.reception_frame_count = 0
+                            self.reception_start_time = time.time()
                 
         except ConnectionResetError:
             print("Server disconnected")
@@ -122,90 +182,174 @@ class VideoStreamClient:
     def process_frames(self):
         """Process frames with object detection (consumer)"""
         while self.running:
-            if self.detection_model and not self.detection_in_progress:
+            self.frame_counter += 1
+            
+            # Only process every Nth frame to reduce CPU load and add stability
+            if self.detection_model and not self.detection_in_progress and self.frame_counter % self.process_every_n_frames == 0:
                 try:
+                    # Get a frame for processing
                     frame = None
+                    
+                    # Prefer current_frame over buffered frames for most up-to-date processing
                     if self.current_frame is not None:
                         frame = self.current_frame.copy()
                     elif not self.frame_buffer.empty():
-                        frame = self.frame_buffer.get()
+                        # If no new frame but buffer has frames, use from buffer
+                        frame_data = self.frame_buffer.get()
                     
-                    if frame is not None:
+                    if frame_data is not None:
                         self.detection_in_progress = True
-                        self.process_frame_with_detection(frame)
+                        self.process_frame_with_detection(frame_data)
                         self.detection_in_progress = False
+                        
+                    # Update processing FPS counter
+                    self.processed_frames_count += 1
+                    elapsed = time.time() - self.processing_start_time
+                    if elapsed >= 1.0:
+                        self.processing_fps = self.processed_frames_count / elapsed
+                        print(f"Processing rate: {self.processing_fps:.2f} FPS")
+                        self.processed_frames_count = 0
+                        self.processing_start_time = time.time()
                 except Exception as e:
                     print(f"Error in frame processing: {e}")
                     self.detection_in_progress = False
             time.sleep(0.01)
     
-    def process_frame_with_detection(self, frame):
+    def process_frame_with_detection(self, frame_data):
         """Apply object detection to a frame"""
+        
         print('Processing frame with detection')
         return
         try:
+            # Perform object detection
             results = self.detection_model.predict(frame, conf=0.25)
+            
+            # Process the results and draw bounding boxes
             processed_frame = frame.copy()
             for result in results:
                 boxes = result.boxes
                 for box in boxes:
+                    # Get box coordinates
                     x1, y1, x2, y2 = map(int, box.xyxy[0])
+                    
+                    # Get class and confidence
                     cls = int(box.cls[0])
                     conf = float(box.conf[0])
+                    
+                    # Get class name
                     class_name = result.names[cls]
+                    
+                    # Draw on the processed frame
                     cv2.rectangle(processed_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
                     label = f"{class_name} {conf:.2f}"
                     cv2.putText(processed_frame, label, (x1, y1 - 10), 
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+            
+            # Update the current frame with the processed version
             self.current_frame = processed_frame
+            
+            # Add your custom processing logic here
+            # For example, logging detections, sending commands based on detections, etc.
+            
         except Exception as e:
             print(f"Error in object detection: {e}")
-    
-    def listen_for_controls(self):
-        """Listen for control commands like steering and speed"""
-        control_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        control_socket.bind(('', self.control_port))
-        control_socket.listen(1)
-        print(f"[CONTROL] Listening for control commands on port {self.control_port}")
-
-        conn, addr = control_socket.accept()
-        print(f"[CONTROL] Connection from {addr}")
-
-        try:
-            while self.running:
-                data = conn.recv(1024)
-                if not data:
-                    break
-                try:
-                    action = json.loads(data.decode('utf-8'))
-                    print(f"[CONTROL] Received action: {action}")
-                    # TODO: Control robot motors using action['steering'] and action['speed']
-                except json.JSONDecodeError as e:
-                    print(f"[CONTROL] JSON decode error: {e}")
-        except Exception as e:
-            print(f"[CONTROL] Error: {e}")
-        finally:
-            conn.close()
-            control_socket.close()
     
     def display_frames(self):
         """Display received and processed frames"""
         try:
+            cv2.namedWindow('Stream', cv2.WINDOW_NORMAL)
+            last_displayed_timestamp = 0
+            display_fps = 0
+            fps_start_time = time.time()
+            frame_count = 0
+            last_smoothed_boxes = []  # Cache last valid set of boxes
+            last_boxes_time = 0
+            
             while self.running:
                 if self.current_frame is not None:
+                    # Display the current frame (original or processed)
                     cv2.imshow('Stream', self.current_frame)
+                    
+                    # Check for 'q' key press to quit
                     key = cv2.waitKey(1) & 0xFF
                     if key == ord("q"):
                         self.running = False
                         break
+                    
+                    # Adaptive sleep to maintain target frame rate
+                    frame_time = time.time() - frame_start
+                    target_frame_time = 1.0 / 30.0  # target 30fps
+                    if frame_time < target_frame_time:
+                        time.sleep(target_frame_time - frame_time)
                 else:
                     time.sleep(0.01)
+                    
         except KeyboardInterrupt:
             print("Display stopped by user")
         except Exception as e:
             print(f"Error displaying frames: {e}")
         finally:
             self.cleanup()
+    
+    def draw_smoothed_boxes(self, frame, smoothed_boxes):
+        """Draw smoothed bounding boxes on the frame"""
+        for box in smoothed_boxes:
+            x1, y1, x2, y2 = [int(coord) for coord in box['xyxy']]
+            cls = box['cls']
+            conf = box['conf']
+            obj_id = box['id']
+            
+            # Get class name and color
+            try:
+                # Get class name from the YOLO model's names dictionary
+                class_name = self.detection_model.names[cls]
+            except:
+                class_name = f"Class {cls}"
+                
+            color = getColours(cls)
+            
+            # Draw rectangle with slightly increased thickness for stability
+            cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)  # Reduced thickness for performance
+            
+            # Simplified label to reduce text rendering overhead
+            label = f'{class_name[:3]}{conf:.1f}'  # Shorter label
+            cv2.putText(frame, label, (x1, y1 - 5), 
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)  # Smaller, thinner text
+        
+        return frame
+
+    def draw_detection_results(self, frame, results):
+        """Draw detection boxes directly on a frame (used with raw results)"""
+        for result in results:
+            boxes = result.boxes
+            for box in boxes:
+                # Get box coordinates
+                try:
+                    x1, y1, x2, y2 = box.xyxy[0].int().tolist()
+                    cls = int(box.cls[0])
+                    conf = float(box.conf[0])
+                    
+                    class_name = result.names[cls]
+                    color = getColours(cls)
+                    
+                    # Draw rectangle and label
+                    cv2.rectangle(frame, (x1, y1), (x2, y2), color, 2)
+                    label = f'{class_name} {conf:.2f}'
+                    cv2.putText(frame, label, (x1, y1 - 10), 
+                                cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+                except:
+                    continue
+                
+        return frame
+
+    def add_sensor_data_to_frame(self, frame, sensor_data):
+        """Add sensor data overlay to a frame"""
+        ultrasonic = sensor_data.get('ultrasonic')
+        
+        # Only display ultrasonic data to reduce rendering overhead
+        if ultrasonic is not None:
+            cv2.putText(frame, f"Dist: {ultrasonic:.1f}cm", 
+                       (10, 70), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)  # Simpler, faster text
     
     def cleanup(self):
         """Clean up resources"""

@@ -5,6 +5,12 @@ import time
 import os
 import base64
 import json
+from PIL import Image
+import io
+import cv2
+import pickle
+import struct
+import numpy as np
 
 class SocketClient:
     def __init__(self, host='10.12.81.101', port=5000):
