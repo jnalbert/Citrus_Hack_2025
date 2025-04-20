@@ -38,7 +38,7 @@ while True:
         continue
 
     # detect & track
-    results = yolo.track(frame, stream=True, conf=0.2, persist=True)
+    results = yolo.predict(frame, stream=True, conf=0.3)
 
     # draw boxes
     for result in results:
