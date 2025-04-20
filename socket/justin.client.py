@@ -21,7 +21,7 @@ class VideoStreamClient:
         
         Args:
             host (str): Host IP to connect to. If None, will prompt user
-            port (int): Port to connect to. Default 9999
+            port (int): Port to connect to. Default 8080
             buffer_size (int): Max number of frames to buffer
         """
         self.host = host
@@ -43,9 +43,9 @@ class VideoStreamClient:
         
         # Box tracking and stabilization
         self.detection_history = {}  # Track objects by ID
-        self.history_length = 3      # Number of frames to keep in history (reduced from 5)
-        self.min_detection_frames = 2  # Minimum frames an object must be detected to display (reduced from 3)
-        self.process_every_n_frames = 2  # Only process every N frames (reduced from 3)
+        self.history_length = 3      # Number of frames to keep in history
+        self.min_detection_frames = 2  # Minimum frames an object must be detected to display
+        self.process_every_n_frames = 2  # Only process every N frames
         self.frame_counter = 0
         
         # Performance settings
@@ -53,11 +53,20 @@ class VideoStreamClient:
         self.detection_width = 320  # Smaller width for faster detection
         self.original_size = None   # Store original frame size
         
+        # Network optimization settings
+        self.recv_buffer_size = 65536  # 64KB buffer for socket operations
+        self.reception_fps = 0         # Track reception frame rate
+        self.reception_frame_count = 0
+        self.reception_start_time = time.time()
+        
     def connect_to_server(self):
         """Connect to the video streaming server"""
         try:
             # Create socket
             self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            
+            # Set socket options for better streaming performance
+            self.client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, self.recv_buffer_size)
             
             # Get server address if not provided
             if self.host is None:
@@ -68,6 +77,7 @@ class VideoStreamClient:
             print("Connected to server successfully")
             
             self.running = True
+            self.reception_start_time = time.time()
             return True
             
         except Exception as e:
@@ -111,6 +121,10 @@ class VideoStreamClient:
         # Main thread displays frames
         self.display_frames()
     
+    def decompress_frame(self, compressed_frame):
+        """Decompress JPEG frame data back to numpy array"""
+        return cv2.imdecode(np.frombuffer(compressed_frame, dtype=np.uint8), cv2.IMREAD_COLOR)
+    
     def receive_frames(self):
         """Receive and buffer video frames from the server (producer)"""
         try:
@@ -120,7 +134,7 @@ class VideoStreamClient:
             while self.running:
                 # Receive data until we have the payload size
                 while len(data) < payload_size:
-                    packet = self.client_socket.recv(4096)
+                    packet = self.client_socket.recv(self.recv_buffer_size)
                     if not packet:
                         self.running = False
                         break
@@ -136,7 +150,7 @@ class VideoStreamClient:
                 
                 # Receive the frame data
                 while len(data) < msg_size:
-                    data += self.client_socket.recv(4096)
+                    data += self.client_socket.recv(self.recv_buffer_size)
                 
                 # Extract the frame
                 package_data = data[:msg_size]
@@ -145,17 +159,26 @@ class VideoStreamClient:
                 # Deserialize the data package
                 data_package = pickle.loads(package_data)
                 
-                # Extract frame and sensor data
-                frame = data_package['frame']
+                # Extract and decompress frame and sensor data
+                if 'frame_compressed' in data_package:
+                    compressed_frame = data_package['frame_compressed']
+                    frame = self.decompress_frame(compressed_frame)
+                else:
+                    # Fallback for backward compatibility
+                    frame = data_package.get('frame')
+                
+                if frame is None:
+                    continue
                 
                 # Store original size if not already stored
-                if self.original_size is None and frame is not None:
+                if self.original_size is None:
                     self.original_size = frame.shape[:2]  # Height, width
                 
                 # Store the sensor data
                 self.current_sensor_data = {
-                    'ultrasonic': data_package['ultrasonic'],
-                    'timestamp': data_package['timestamp']
+                    'ultrasonic': data_package.get('ultrasonic', 0),
+                    'timestamp': data_package.get('timestamp', time.time()),
+                    'frame_count': data_package.get('frame_count', 0)
                 }
                 
                 # Update current frame (latest frame always available)
@@ -171,6 +194,17 @@ class VideoStreamClient:
                         self.frame_buffer.put_nowait(self.frame_buffer_with_ids[frame_id])
                 except:
                     pass  # Skip frame if buffer is full
+                
+                # Update reception FPS metrics
+                self.reception_frame_count += 1
+                if self.reception_frame_count % 30 == 0:
+                    elapsed = time.time() - self.reception_start_time
+                    if elapsed > 0:
+                        self.reception_fps = self.reception_frame_count / elapsed
+                        # Reset counters every 300 frames for a more recent average
+                        if self.reception_frame_count >= 300:
+                            self.reception_frame_count = 0
+                            self.reception_start_time = time.time()
                 
         except ConnectionResetError:
             print("Server disconnected")
@@ -427,8 +461,9 @@ class VideoStreamClient:
                         fps_start_time = time.time()
                     
                     # Display FPS in overlay
-                    cv2.putText(display_frame, f"Display: {display_fps:.1f} FPS | Detection: {self.processing_fps:.1f} FPS", 
-                               (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+                    cv2.putText(display_frame, 
+                              f"Display: {display_fps:.1f} FPS | Detection: {self.processing_fps:.1f} FPS | Receive: {self.reception_fps:.1f} FPS", 
+                              (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
                     
                     # Display the frame - this is a potentially slow operation
                     cv2.imshow('Stream', display_frame)
