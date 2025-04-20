@@ -767,6 +767,9 @@ class VideoStreamClient:
         Returns:
             Tuple of (steering_angle, speed) or None if not enough frames processed
         """
+        # Get current ultrasonic distance reading from sensor data
+        ultrasonic_distance = self.current_sensor_data.get('ultrasonic', None)
+        
         bounding_boxes = []
         for box in smoothed_boxes:
             # Get class name from the detection model
@@ -784,11 +787,13 @@ class VideoStreamClient:
             })
         
         # This will return None if not enough histograms have been collected
-        action = generate_action_from_bounding_boxes(bounding_boxes)
+        # Pass ultrasonic distance data to the navigation function
+        action = generate_action_from_bounding_boxes(bounding_boxes, ultrasonic_distance)
+        # action = None
         
         # Return None if the navigation system isn't ready yet
         if action is None:
-          return None
+            return None
         
         # Otherwise, return the computed steering and speed
         return action['steering'], action['speed']

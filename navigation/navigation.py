@@ -9,15 +9,21 @@ HISTOGRAM_ZONES = 30
 IMAGE_WIDTH = 640 # Example, use the width of your camera image
 IMAGE_HEIGHT = 480 # Typical height for 640x480 resolution
 
+# Ultrasonic sensor configuration
+ULTRASONIC_MAX_DISTANCE = 40.0  # Maximum reliable distance in cm
+ULTRASONIC_DANGER_THRESHOLD = 30.0  # Distance below which objects are dangerous
+ULTRASONIC_SAFE_DISTANCE = 70.0  # Distance above which objects are considered safe
+CENTER_REGION_WIDTH = 0.25  # Center 1/3 of the frame where ultrasonic is accurate
+
 # Classes to ignore - adjust based on your YOLO model's class list
 # Common floor/ground classes in COCO dataset
 IGNORE_CLASSES = [
     'floor', 'ground', 'road', 'dirt', 'grass', 'pavement', 'asphalt',
-    'carpet', 'mat', 'rug', 'sand', 'snow', 'earth', 'field'
+    'carpet', 'mat', 'rug', 'sand', 'snow', 'earth', 'field', 'door', 'window', 'wall'
 ]
 
 # Position-based filtering
-FLOOR_REGION_THRESHOLD = 0.35  # Bottom 65% of the frame might be floor
+FLOOR_REGION_THRESHOLD = 0.35  # Bottom 35% of the frame might be floor
 
 class HistogramBuffer:
     def __init__(self, buffer_size=20, num_zones=HISTOGRAM_ZONES):
@@ -48,7 +54,7 @@ class HistogramBuffer:
         self.count = 0
 
 # Create a global histogram buffer
-histogram_buffer = HistogramBuffer(buffer_size=45)
+histogram_buffer = HistogramBuffer(buffer_size=80)
 
 def is_floor_detection(detection, image_height=IMAGE_HEIGHT):
     """
@@ -82,7 +88,53 @@ def is_floor_detection(detection, image_height=IMAGE_HEIGHT):
     
     return False
 
-def create_histogram(detections, image_width, camera_fov_horizontal, num_zones):
+def is_in_center_region(bbox, image_width):
+    """
+    Check if a detection is in the center region where ultrasonic sensor is accurate.
+    
+    Args:
+        bbox: Bounding box [x1, y1, x2, y2]
+        image_width: Width of the image frame
+    
+    Returns:
+        bool: True if detection is in center region
+    """
+    # Calculate center of the bounding box
+    center_x = (bbox[0] + bbox[2]) / 2
+    
+    # Calculate boundaries of center region
+    center_start = image_width * (0.5 - CENTER_REGION_WIDTH/2)
+    center_end = image_width * (0.5 + CENTER_REGION_WIDTH/2)
+    
+    # Check if center of box is in center region
+    return center_start <= center_x <= center_end
+
+def calculate_distance_factor(ultrasonic_distance):
+    """
+    Calculate a scaling factor based on ultrasonic distance.
+    
+    Returns a value between 0.0 (far/safe) and 1.0 (close/dangerous)
+    
+    Args:
+        ultrasonic_distance: Distance reading in cm
+    
+    Returns:
+        float: Scaling factor between 0.0 and 1.0
+    """
+    # Make sure distance is within reasonable bounds
+    distance = min(max(0.1, ultrasonic_distance), ULTRASONIC_MAX_DISTANCE)
+    
+    if distance <= ULTRASONIC_DANGER_THRESHOLD:
+        # Object is close - full danger
+        return 1.0
+    elif distance >= ULTRASONIC_SAFE_DISTANCE:
+        # Object is far - minimal danger
+        return 0.2  # Still a small non-zero value
+    else:
+        # Linear interpolation between danger and safe thresholds
+        return 1.0 - 0.8 * (distance - ULTRASONIC_DANGER_THRESHOLD) / (ULTRASONIC_SAFE_DISTANCE - ULTRASONIC_DANGER_THRESHOLD)
+
+def create_histogram(detections, image_width, camera_fov_horizontal, num_zones, ultrasonic_distance=None):
     """Creates a histogram representing obstacle distribution based on YOLO detections.
 
     Args:
@@ -92,6 +144,7 @@ def create_histogram(detections, image_width, camera_fov_horizontal, num_zones):
         image_width (int): The width of the image in pixels.
         camera_fov_horizontal (float): The horizontal field of view of the camera in degrees.
         num_zones (int): The number of angular zones in the histogram.
+        ultrasonic_distance (float): Distance reading from ultrasonic sensor in cm.
 
     Returns:
         numpy.ndarray: A 1D numpy array representing the histogram.
@@ -99,6 +152,13 @@ def create_histogram(detections, image_width, camera_fov_horizontal, num_zones):
     histogram = np.zeros(num_zones)
     center_pixel = image_width / 2
     fov_rad_per_pixel = np.radians(camera_fov_horizontal) / image_width
+    
+    # Get distance factor if ultrasonic data is available
+    if ultrasonic_distance is not None:
+        distance_factor = calculate_distance_factor(ultrasonic_distance)
+        print(f"Ultrasonic distance: {ultrasonic_distance:.1f}cm, Factor: {distance_factor:.2f}")
+    else:
+        distance_factor = 1.0  # Default to full value if no sensor data
 
     for detection in detections:
         # Skip floor/ground detections
@@ -108,6 +168,15 @@ def create_histogram(detections, image_width, camera_fov_horizontal, num_zones):
         bbox = detection['bbox']
         x_min_pixel = bbox[0]
         x_max_pixel = bbox[2]
+        confidence = detection['confidence']
+        
+        # Check if object is in center region where ultrasonic is relevant
+        if ultrasonic_distance is not None and is_in_center_region(bbox, image_width):
+            # Adjust confidence based on ultrasonic distance
+            adjusted_confidence = confidence * distance_factor
+            print(f"Object in center region: conf {confidence:.2f} -> {adjusted_confidence:.2f}")
+        else:
+            adjusted_confidence = confidence
 
         angle_min_rad = (x_min_pixel - center_pixel) * fov_rad_per_pixel
         angle_max_rad = (x_max_pixel - center_pixel) * fov_rad_per_pixel
@@ -124,7 +193,7 @@ def create_histogram(detections, image_width, camera_fov_horizontal, num_zones):
 
         # Increment all zones the bounding box occupies
         for zone_index in range(zone_min_index, zone_max_index + 1):
-            histogram[zone_index] += detection['confidence']
+            histogram[zone_index] += adjusted_confidence
             
     kernel = np.array([0.05, 0.2, 0.5, 0.2, 0.05])  # Example Gaussian kernel
     histogram = convolve(histogram, kernel, mode='same')
@@ -179,8 +248,8 @@ def generate_action(clear_path, num_zones):
         deviation_from_center = center_of_path - (num_zones / 2)
         normalized_deviation = deviation_from_center / (num_zones / 2)  # -1 to 1
 
-        steering_angle = normalized_deviation * 20.0  # Adjust max steering angle.  Adjust this scaling factor!
-        speed = 0.1  # Base speed, adjust as needed
+        steering_angle = normalized_deviation * 40.0  # Adjust max steering angle.  Adjust this scaling factor!
+        speed = 0.05  # Base speed, adjust as needed
         return {'steering': steering_angle, 'speed': speed}
     else:
         return {'steering': 0.0, 'speed': 0.0}  # Stop if no clear path
@@ -198,15 +267,16 @@ def visualize_histogram(histogram):
     plt.title(f"Histogram")
     plt.show(block=True)
     
-def generate_action_from_bounding_boxes(bounding_boxes):
+def generate_action_from_bounding_boxes(bounding_boxes, ultrasonic_distance=None):
     """Generates steering and speed commands based on the bounding boxes.
     
-    Now averages histograms over multiple frames for smoother control.
-    Only returns an action after processing buffer_size (20) frames.
-    Also filters out floor/ground detections.
+    Now averages histograms over multiple frames for smoother control,
+    filters out floor/ground detections, and incorporates ultrasonic sensor data.
     
     Args:
         bounding_boxes: A list of bounding boxes
+        ultrasonic_distance: Distance reading from ultrasonic sensor in cm
+        
     Returns:
         A dictionary containing 'steering' and 'speed', or None if not enough frames processed
     """
@@ -220,8 +290,9 @@ def generate_action_from_bounding_boxes(bounding_boxes):
     if filtered_count > 0:
         print(f"Filtered out {filtered_count} floor/ground detections out of {total_detections} total")
     
-    # Create the histogram for current frame using filtered detections
-    current_histogram = create_histogram(filtered_bboxes, IMAGE_WIDTH, CAMERA_FOV_HORIZONTAL, HISTOGRAM_ZONES)
+    # Create the histogram for current frame using filtered detections and ultrasonic data
+    current_histogram = create_histogram(filtered_bboxes, IMAGE_WIDTH, CAMERA_FOV_HORIZONTAL, 
+                                         HISTOGRAM_ZONES, ultrasonic_distance)
     
     # Add to buffer
     histogram_buffer.add_histogram(current_histogram)
