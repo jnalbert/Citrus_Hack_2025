@@ -1,8 +1,8 @@
 import cv2
-from ultralytics import YOLO
+from ultralytics import YOLOE
 
 # Load the model
-yolo = YOLO('yolov8s.pt')
+yolo = YOLOE('yoloe-11s-seg-pf.pt')
 
 # Load the video capture
 videoCap = cv2.VideoCapture(0)
@@ -25,7 +25,7 @@ while True:
         continue
     
     # Set conf parameter to 0 to detect all objects regardless of confidence
-    results = yolo.track(frame, stream=True, conf=0.0)
+    results = yolo.track(frame, stream=True, conf=0.2, persist=True)
 
     for result in results:
         # get the classes names
