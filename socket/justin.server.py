@@ -5,7 +5,7 @@ import struct
 import sys
 
 class VideoStreamServer:
-    def __init__(self, host='0.0.0.0', port=9999):
+    def __init__(self, host='0.0.0.0', port=8080):
         """
         Initialize the video streaming server
         
@@ -26,7 +26,7 @@ class VideoStreamServer:
             # Create a socket that connects to an external server
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             # Doesn't actually connect, just sets up the socket
-            s.connect(("8.8.8.8", 80))
+            s.connect(("0.0.0.0", 80))
             local_ip = s.getsockname()[0]
             s.close()
             return local_ip
