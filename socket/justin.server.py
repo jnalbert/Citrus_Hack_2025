@@ -513,10 +513,10 @@ class ControlServer:
             return
           
         # make a non blockking call to move the car forward
-        self.car_controller.move_forward(speed)
+        '''self.car_controller.move_forward(speed)
             
         # Implementation for Raspberry Pi with actual hardware
-        try:
+        
             if self.car_controller is not None:
                 motor_speed = abs(speed * 100.0)
                 
@@ -530,7 +530,42 @@ class ControlServer:
                 else:
                     self.car_controller.move_forward(motor_speed)
         except Exception as e:
+            print(f"Error applying control commands: {e}")'''
+        
+        try:
+            if self.car_controller is not None:
+            
+            # Rotate 5 degrees
+                if steering_angle < 0:
+                    self.car_controller.turn_right(steering_angle, motor_speed)
+                else:
+                    self.car_controller.turn_left(steering_angle, motor_speed)
+                time.sleep(0.5)  # Rotate for 0.5 seconds
+            
+            # Move forward for 0.5 seconds
+                motor_speed = abs(speed * 100.0)
+                self.car_controller.move_forward(motor_speed)
+                time.sleep(0.5)  # Move forward for 0.5 seconds
+
+            # Rotate 5 degrees
+                  # Convert degrees to a normalized value (-1.0 to 1.0)
+                if steering_angle < 0:
+                    self.car_controller.turn_left(steering_angle, motor_speed)
+                else:
+                    self.car_controller.turn_right(steering_angle, motor_speed)
+                time.sleep(0.5)  # Rotate for 0.5 seconds
+            
+            # Move forward for 0.5 seconds
+                motor_speed = abs(speed * 100.0)
+                self.car_controller.move_forward(motor_speed)
+                time.sleep(0.5)  # Move forward for 0.5 seconds
+            
+            # Stop the robot after the movement
+                self.car_controller.stop()
+        except Exception as e:
             print(f"Error applying control commands: {e}")
+
+            
             
     def cleanup(self):
         """Clean up resources"""
