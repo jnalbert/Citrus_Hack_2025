@@ -237,7 +237,7 @@ class MovementController:
 if __name__ == "__main__":
     controller = MovementController()
     controller.tts.lang("en-US")
-    controller.tts.say("Hello, I am your PiCar-X. Let's start moving!")
+    controller.tts.say("Hello, I am SmartCar. Let's start moving!")
     time.sleep(2)
     try:
         print("Starting autonomous navigation. Press Ctrl+C to exit.")
